@@ -909,32 +909,30 @@ async function findMarketplacePayment(
     return snapshot.docs[0];
 
 
-  /*
-  -------------------------------------------------------
-  OLD FIELD COMPATIBILITY
-  -------------------------------------------------------
-  */
+ /*
+-------------------------------------------------------
+OLD FIELD COMPATIBILITY
+-------------------------------------------------------
+*/
 
-  snapshot =
-    await db
-      .collection(
-        COLLECTIONS.PAYMENTS
-      )
-      .where(
-        "checkoutRequestId",
-        "==",
-        checkoutRequestID
-      )
-      .limit(1)
-      .get();
+snapshot =
+  await db
+    .collection("transactions")
+    .where(
+      "checkoutRequestId",
+      "==",
+      checkoutRequestID
+    )
+    .limit(1)
+    .get();
 
 
-  if (snapshot.empty)
-    return null;
+if (snapshot.empty) {
+  return null;
+}
 
 
-  return snapshot.docs[0];
-
+return snapshot.docs[0];
 }
 
 
