@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-
+const investmentRoutes = require("./route/investmentRoutes");
 const checkoutRoutes = require("./route/checkoutRoutes");
 const paymentRoutes = require("./route/paymentRoutes");
 const orderRoutes = require("./route/orderRoutes");
@@ -97,7 +97,16 @@ app.use(
     webhookRoutes
 );
 
+/*
+=========================================================
+INVESTMENTS
+=========================================================
+*/
 
+app.use(
+    "/api/payments",
+    investmentRoutes
+);
 /*
 =========================================================
 ERROR HANDLER

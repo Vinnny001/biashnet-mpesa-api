@@ -568,19 +568,35 @@ async function investmentCallback(
   resultDesc
 ) {
 
-  const ref =
-    db
-      .collection(
-        COLLECTIONS.PENDING_TRANSACTIONS
-      )
-      .doc(
-        checkoutRequestID
-      );
+  const snapshot =
+  await db
+    .collection("pendingTransactions")
+    .where(
+      "checkoutRequestID",
+      "==",
+      checkoutRequestID
+    )
+    .limit(1)
+    .get();
 
+if (snapshot.empty) {
 
-  const snap =
-    await ref.get();
+  return {
+    handled: false,
+    reason: "UNKNOWN_PAYMENT",
+    checkoutRequestID,
+  };
 
+}
+
+const ref =
+  snapshot.docs[0].ref;
+
+const snap =
+  snapshot.docs[0];
+
+const pending =
+  snap.data();
 
   if (!snap.exists) {
 
@@ -755,7 +771,7 @@ async function investmentCallback(
       amount,
 
       type:
-        "DEPOSIT",
+        "INVESTMENT",
 
       status:
         "SUCCESS",
