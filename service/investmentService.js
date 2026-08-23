@@ -12,52 +12,13 @@ const {
 =========================================================
 INVESTMENT SERVICE
 =========================================================
-
-RESPONSIBILITY:
-
-This service INITIATES an investment payment.
-
-It does NOT process the M-PESA callback.
-
-FLOW:
-
-Controller
-    ↓
-initiateInvestment()
-    ↓
-Create pendingTransactions document
-    ↓
-daraja.stkPush()
-    ↓
-Safaricom
-    ↓
-Webhook
-    ↓
-paymentCallbackService
-    ↓
-Complete investment
-    ↓
-transactions
-    ↓
-wallet
-    ↓
-investor
-
-
-=========================================================
 */
 
-
 async function initiateInvestment({
-
   userId,
-
   phone,
-
   amount,
-
 }) {
-
 
   /*
   =======================================================
@@ -75,43 +36,12 @@ async function initiateInvestment({
     error.statusCode = 401;
 
     throw error;
-
   }
 
 
   /*
   =======================================================
-  2. VERIFY BIASHNET USER
-  =======================================================
-  */
-
-  const userRef =
-    db
-      .collection("users")
-      .doc(userId);
-
-
-  const userSnap =
-    await userRef.get();
-
-
-  if (!userSnap.exists) {
-
-    const error =
-      new Error(
-        "BIASHNET user account not found."
-      );
-
-    error.statusCode = 404;
-
-    throw error;
-
-  }
-
-
-  /*
-  =======================================================
-  3. VERIFY INVESTOR ACCOUNT
+  2. VALIDATE INVESTOR
   =======================================================
   */
 
@@ -135,19 +65,12 @@ async function initiateInvestment({
     error.statusCode = 403;
 
     throw error;
-
   }
 
 
   const investor =
     investorSnap.data();
 
-
-  /*
-  =======================================================
-  4. VERIFY INVESTOR STATUS
-  =======================================================
-  */
 
   if (
     investor.status ===
@@ -162,13 +85,12 @@ async function initiateInvestment({
     error.statusCode = 403;
 
     throw error;
-
   }
 
 
   /*
   =======================================================
-  5. VALIDATE AMOUNT
+  3. VALIDATE AMOUNT
   =======================================================
   */
 
@@ -185,19 +107,18 @@ async function initiateInvestment({
 
     const error =
       new Error(
-        "Investment amount must be at least KES 1."
+        "Minimum investment is KES 1."
       );
 
     error.statusCode = 400;
 
     throw error;
-
   }
 
 
   /*
   =======================================================
-  6. NORMALIZE PHONE
+  4. NORMALIZE PHONE
   =======================================================
   */
 
@@ -219,33 +140,12 @@ async function initiateInvestment({
     validationError.statusCode = 400;
 
     throw validationError;
-
   }
 
 
   /*
   =======================================================
-  7. CREATE PENDING TRANSACTION
-  =======================================================
-
-  IMPORTANT:
-
-  Safaricom has not yet provided a
-  CheckoutRequestID.
-
-  Therefore Firestore generates the temporary
-  document ID.
-
-  Example:
-
-  pendingTransactions/
-      abc123
-
-  Later:
-
-  checkoutRequestID:
-      ws_CO_123456789
-
+  5. CREATE PENDING TRANSACTION
   =======================================================
   */
 
@@ -257,20 +157,14 @@ async function initiateInvestment({
       .doc();
 
 
-  const pendingTransactionId =
+  const pendingId =
     pendingRef.id;
 
-
-  /*
-  =======================================================
-  8. SAVE PENDING INVESTMENT
-  =======================================================
-  */
 
   await pendingRef.set({
 
     id:
-      pendingTransactionId,
+      pendingId,
 
     userId,
 
@@ -298,18 +192,6 @@ async function initiateInvestment({
     merchantRequestID:
       null,
 
-    responseCode:
-      null,
-
-    responseDescription:
-      null,
-
-    customerMessage:
-      null,
-
-    providerResponse:
-      null,
-
     createdAt:
       new Date(),
 
@@ -321,7 +203,7 @@ async function initiateInvestment({
 
   /*
   =======================================================
-  9. SEND STK PUSH
+  6. SEND STK PUSH
   =======================================================
   */
 
@@ -348,18 +230,6 @@ async function initiateInvestment({
 
   } catch (error) {
 
-    console.error(
-      "❌ Investment STK Push failed:",
-      error
-    );
-
-
-    /*
-    ===============================================
-    KEEP THE RECORD FOR AUDIT
-    ===============================================
-    */
-
     await pendingRef.update({
 
       status:
@@ -373,48 +243,33 @@ async function initiateInvestment({
 
     });
 
-
     throw error;
-
   }
 
 
   /*
   =======================================================
-  10. EXTRACT SAFARICOM RESPONSE
+  7. READ SAFARICOM RESPONSE
   =======================================================
   */
 
   const checkoutRequestID =
-    stkResponse?.CheckoutRequestID ||
-    null;
+    stkResponse?.CheckoutRequestID;
 
 
   const merchantRequestID =
-    stkResponse?.MerchantRequestID ||
-    null;
+    stkResponse?.MerchantRequestID;
 
 
   const responseCode =
     String(
-      stkResponse?.ResponseCode ??
-      ""
+      stkResponse?.ResponseCode ?? ""
     );
-
-
-  const responseDescription =
-    stkResponse?.ResponseDescription ||
-    null;
-
-
-  const customerMessage =
-    stkResponse?.CustomerMessage ||
-    null;
 
 
   /*
   =======================================================
-  11. VALIDATE STK RESPONSE
+  8. STK FAILED
   =======================================================
   */
 
@@ -429,12 +284,17 @@ async function initiateInvestment({
         "STK_FAILED",
 
       responseCode:
-        responseCode ||
+        responseCode || null,
+
+      responseDescription:
+        stkResponse
+          ?.ResponseDescription ||
         null,
 
-      responseDescription,
-
-      customerMessage,
+      customerMessage:
+        stkResponse
+          ?.CustomerMessage ||
+        null,
 
       providerResponse:
         stkResponse,
@@ -447,23 +307,20 @@ async function initiateInvestment({
 
     const error =
       new Error(
-        responseDescription ||
+        stkResponse
+          ?.ResponseDescription ||
         "M-PESA STK Push could not be initiated."
       );
 
-
-    error.statusCode =
-      502;
-
+    error.statusCode = 502;
 
     throw error;
-
   }
 
 
   /*
   =======================================================
-  12. SAVE SAFARICOM IDENTIFIERS
+  9. SAVE CHECKOUT REQUEST ID
   =======================================================
   */
 
@@ -471,13 +328,21 @@ async function initiateInvestment({
 
     checkoutRequestID,
 
-    merchantRequestID,
+    merchantRequestID:
+      merchantRequestID ||
+      null,
 
     responseCode,
 
-    responseDescription,
+    responseDescription:
+      stkResponse
+        ?.ResponseDescription ||
+      null,
 
-    customerMessage,
+    customerMessage:
+      stkResponse
+        ?.CustomerMessage ||
+      null,
 
     providerResponse:
       stkResponse,
@@ -493,7 +358,7 @@ async function initiateInvestment({
 
   /*
   =======================================================
-  13. RETURN
+  10. RETURN
   =======================================================
   */
 
@@ -501,11 +366,14 @@ async function initiateInvestment({
 
     success: true,
 
-    pendingTransactionId,
+    pendingTransactionId:
+      pendingId,
 
     checkoutRequestID,
 
-    merchantRequestID,
+    merchantRequestID:
+      merchantRequestID ||
+      null,
 
     amount:
       numericAmount,
@@ -517,22 +385,15 @@ async function initiateInvestment({
       "STK_SENT",
 
     message:
-      customerMessage ||
-      "M-PESA payment request sent successfully. Check your phone and enter your M-PESA PIN.",
+      stkResponse
+        ?.CustomerMessage ||
+      "M-PESA payment request sent successfully.",
 
   };
 
 }
 
 
-/*
-=========================================================
-EXPORT
-=========================================================
-*/
-
 module.exports = {
-
   initiateInvestment,
-
 };
