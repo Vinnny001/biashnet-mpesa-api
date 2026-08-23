@@ -554,7 +554,6 @@ async function marketplaceCallback(
 
 }
 
-
 /*
 =========================================================
 LEGACY INVESTMENT / WALLET CALLBACK
@@ -568,37 +567,31 @@ async function investmentCallback(
   resultDesc
 ) {
 
+  /*
+  =======================================================
+  FIND PENDING INVESTMENT
+  =======================================================
+  */
+
   const snapshot =
-  await db
-    .collection("pendingTransactions")
-    .where(
-      "checkoutRequestID",
-      "==",
-      checkoutRequestID
-    )
-    .limit(1)
-    .get();
+    await db
+      .collection("pendingTransactions")
+      .where(
+        "checkoutRequestID",
+        "==",
+        checkoutRequestID
+      )
+      .limit(1)
+      .get();
 
-if (snapshot.empty) {
 
-  return {
-    handled: false,
-    reason: "UNKNOWN_PAYMENT",
-    checkoutRequestID,
-  };
+  /*
+  =======================================================
+  PAYMENT NOT FOUND
+  =======================================================
+  */
 
-}
-
-const ref =
-  snapshot.docs[0].ref;
-
-const snap =
-  snapshot.docs[0];
-
-const pending =
-  snap.data();
-
-  if (!snap.exists) {
+  if (snapshot.empty) {
 
     return {
 
@@ -614,9 +607,27 @@ const pending =
   }
 
 
-  const pending =
-    snap.data();
+  /*
+  =======================================================
+  GET DOCUMENT
+  =======================================================
+  */
 
+  const pendingDoc =
+    snapshot.docs[0];
+
+  const ref =
+    pendingDoc.ref;
+
+  const pending =
+    pendingDoc.data();
+
+
+  /*
+  =======================================================
+  ALREADY SUCCESSFUL
+  =======================================================
+  */
 
   if (
     pending.status ===
@@ -629,10 +640,17 @@ const pending =
 
       alreadyProcessed: true,
 
+      checkoutRequestID,
+
+      userId:
+        pending.userId,
+
+      amount:
+        pending.amount,
+
     };
 
   }
-
 
   /*
   =======================================================
