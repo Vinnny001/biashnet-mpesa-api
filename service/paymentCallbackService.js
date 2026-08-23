@@ -942,7 +942,53 @@ async function findMarketplacePayment(
   if (!snapshot.empty)
     return snapshot.docs[0];
 
+/*
+=========================================================
+FIND INVESTMENT PAYMENT
+=========================================================
 
+Investment STK requests live in:
+
+pendingTransactions
+
+The callback uses:
+
+CheckoutRequestID
+        ↓
+pendingTransactions.checkoutRequestID
+        ↓
+investmentCallback()
+=========================================================
+*/
+
+async function findInvestmentPayment(
+  checkoutRequestID
+) {
+
+  if (!checkoutRequestID) {
+    return null;
+  }
+
+  const snapshot =
+    await db
+      .collection(
+        "pendingTransactions"
+      )
+      .where(
+        "checkoutRequestID",
+        "==",
+        checkoutRequestID
+      )
+      .limit(1)
+      .get();
+
+  if (snapshot.empty) {
+    return null;
+  }
+
+  return snapshot.docs[0];
+
+}
  /*
 -------------------------------------------------------
 OLD FIELD COMPATIBILITY
@@ -1033,41 +1079,56 @@ async function processMpesaCallback(
     resultCode
   );
 
+/*
+=======================================================
+1. CHECK MARKETPLACE PAYMENT
+=======================================================
+*/
 
-  /*
-  =======================================================
-  1. FIND MARKETPLACE PAYMENT
-  =======================================================
-  */
+const marketplaceDoc =
+  await findMarketplacePayment(
+    checkoutRequestID
+  );
 
-  const marketplaceDoc =
-    await findMarketplacePayment(
-      checkoutRequestID
-    );
+if (marketplaceDoc) {
 
+  console.log(
+    "🛒 Marketplace payment found:",
+    checkoutRequestID
+  );
 
-  if (marketplaceDoc) {
+  return marketplaceCallback(
 
-    return marketplaceCallback(
+    marketplaceDoc,
 
-      marketplaceDoc,
+    callback,
 
-      callback,
+    resultCode,
 
-      resultCode,
+    resultDesc
 
-      resultDesc
+  );
 
-    );
-
-  }
+}
 
 
-  /*
-  =======================================================
-  2. FALL BACK TO LEGACY INVESTMENT
-  =======================================================
-  */
+/*
+=======================================================
+2. CHECK INVESTMENT PAYMENT
+=======================================================
+*/
+
+const investmentDoc =
+  await findInvestmentPayment(
+    checkoutRequestID
+  );
+
+if (investmentDoc) {
+
+  console.log(
+    "💰 Investment payment found:",
+    checkoutRequestID
+  );
 
   return investmentCallback(
 
@@ -1080,6 +1141,31 @@ async function processMpesaCallback(
     resultDesc
 
   );
+
+}
+
+
+/*
+=======================================================
+3. UNKNOWN PAYMENT
+=======================================================
+*/
+
+console.warn(
+  "⚠️ Unknown M-PESA CheckoutRequestID:",
+  checkoutRequestID
+);
+
+return {
+
+  handled: false,
+
+  reason:
+    "UNKNOWN_PAYMENT",
+
+  checkoutRequestID,
+
+};
 
 }
 
