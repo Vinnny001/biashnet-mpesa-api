@@ -1,5 +1,5 @@
 const {
-  getAuth,
+  admin,
 } = require("../config/firebase");
 
 const {
@@ -12,6 +12,15 @@ const {
 =========================================================
 GET AUTHENTICATED USER
 =========================================================
+
+Frontend sends:
+
+Authorization:
+Bearer FIREBASE_ID_TOKEN
+
+Firebase Admin verifies the token.
+
+=========================================================
 */
 
 async function getAuthenticatedUser(req) {
@@ -19,6 +28,12 @@ async function getAuthenticatedUser(req) {
   const authorization =
     req.headers.authorization || "";
 
+
+  /*
+  =======================================================
+  AUTHORIZATION HEADER
+  =======================================================
+  */
 
   if (
     !authorization.startsWith(
@@ -34,15 +49,63 @@ async function getAuthenticatedUser(req) {
     error.statusCode = 401;
 
     throw error;
+
   }
 
 
+  /*
+  =======================================================
+  EXTRACT TOKEN
+  =======================================================
+  */
+
   const token =
-    authorization.substring(7);
+    authorization.substring(7).trim();
 
 
-  return getAuth()
-    .verifyIdToken(token);
+  if (!token) {
+
+    const error =
+      new Error(
+        "Authentication token is missing."
+      );
+
+    error.statusCode = 401;
+
+    throw error;
+
+  }
+
+
+  /*
+  =======================================================
+  VERIFY FIREBASE TOKEN
+  =======================================================
+  */
+
+  try {
+
+    return await admin
+      .auth()
+      .verifyIdToken(token);
+
+  } catch (error) {
+
+    console.error(
+      "❌ Firebase authentication failed:",
+      error.message
+    );
+
+    const authError =
+      new Error(
+        "Invalid or expired authentication token."
+      );
+
+    authError.statusCode = 401;
+
+    throw authError;
+
+  }
 
 }
 
@@ -61,9 +124,9 @@ async function initiateInvestment(
   try {
 
     /*
-    =========================================
-    AUTHENTICATE
-    =========================================
+    =====================================================
+    1. AUTHENTICATE USER
+    =====================================================
     */
 
     const user =
@@ -71,21 +134,21 @@ async function initiateInvestment(
 
 
     /*
-    =========================================
-    REQUEST DATA
-    =========================================
+    =====================================================
+    2. REQUEST DATA
+    =====================================================
     */
 
     const {
       phone,
       amount,
-    } = req.body;
+    } = req.body || {};
 
 
     /*
-    =========================================
-    CALL SERVICE
-    =========================================
+    =====================================================
+    3. CALL INVESTMENT SERVICE
+    =====================================================
     */
 
     const result =
@@ -102,9 +165,9 @@ async function initiateInvestment(
 
 
     /*
-    =========================================
-    SUCCESS
-    =========================================
+    =====================================================
+    4. SUCCESS RESPONSE
+    =====================================================
     */
 
     return res.status(200).json({
@@ -149,17 +212,17 @@ async function initiateInvestment(
       error.statusCode || 500;
 
 
-    return res.status(
-      statusCode
-    ).json({
+    return res
+      .status(statusCode)
+      .json({
 
-      success: false,
+        success: false,
 
-      message:
-        error.message ||
-        "Failed to initiate investment.",
+        message:
+          error.message ||
+          "Failed to initiate investment.",
 
-    });
+      });
 
   }
 
