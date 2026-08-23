@@ -907,40 +907,51 @@ async function investmentCallback(
 
 }
 
-
 /*
 =========================================================
 FIND MARKETPLACE PAYMENT
 =========================================================
 
-Uses the new field first.
+Marketplace payments live in:
 
-Also supports old documents using:
+COLLECTIONS.PAYMENTS
 
-checkoutRequestID
+Uses:
+
+checkoutRequestId
+
 =========================================================
 */
 
 async function findMarketplacePayment(
-  checkoutRequestId
+  checkoutRequestID
 ) {
 
-  let snapshot =
+  if (!checkoutRequestID) {
+    return null;
+  }
+
+  const snapshot =
     await db
       .collection(
         COLLECTIONS.PAYMENTS
       )
       .where(
-        "checkoutRequestID",
+        "checkoutRequestId",
         "==",
         checkoutRequestID
       )
       .limit(1)
       .get();
 
+  if (snapshot.empty) {
+    return null;
+  }
 
-  if (!snapshot.empty)
-    return snapshot.docs[0];
+  return snapshot.docs[0];
+
+}
+
 
 /*
 =========================================================
@@ -951,13 +962,10 @@ Investment STK requests live in:
 
 pendingTransactions
 
-The callback uses:
+Uses:
 
-CheckoutRequestID
-        ↓
-pendingTransactions.checkoutRequestID
-        ↓
-investmentCallback()
+checkoutRequestID
+
 =========================================================
 */
 
@@ -989,31 +997,6 @@ async function findInvestmentPayment(
   return snapshot.docs[0];
 
 }
- /*
--------------------------------------------------------
-OLD FIELD COMPATIBILITY
--------------------------------------------------------
-*/
-
-snapshot =
-  await db
-    .collection("transactions")
-    .where(
-      "checkoutRequestId",
-      "==",
-      checkoutRequestID
-    )
-    .limit(1)
-    .get();
-
-
-if (snapshot.empty) {
-  return null;
-}
-
-
-return snapshot.docs[0];
-}
 
 
 /*
@@ -1029,7 +1012,6 @@ async function processMpesaCallback(
   const callback =
     body?.Body?.stkCallback;
 
-
   if (!callback) {
 
     return {
@@ -1043,21 +1025,17 @@ async function processMpesaCallback(
 
   }
 
-
   const checkoutRequestID =
     callback.CheckoutRequestID;
-
 
   const resultCode =
     Number(
       callback.ResultCode
     );
 
-
   const resultDesc =
     callback.ResultDesc ||
     "";
-
 
   if (!checkoutRequestID) {
 
@@ -1072,100 +1050,100 @@ async function processMpesaCallback(
 
   }
 
-
   console.log(
     "🔥 M-PESA CALLBACK:",
     checkoutRequestID,
     resultCode
   );
 
-/*
-=======================================================
-1. CHECK MARKETPLACE PAYMENT
-=======================================================
-*/
 
-const marketplaceDoc =
-  await findMarketplacePayment(
+  /*
+  =======================================================
+  1. CHECK MARKETPLACE PAYMENT
+  =======================================================
+  */
+
+  const marketplaceDoc =
+    await findMarketplacePayment(
+      checkoutRequestID
+    );
+
+  if (marketplaceDoc) {
+
+    console.log(
+      "🛒 Marketplace payment found:",
+      checkoutRequestID
+    );
+
+    return marketplaceCallback(
+
+      marketplaceDoc,
+
+      callback,
+
+      resultCode,
+
+      resultDesc
+
+    );
+
+  }
+
+
+  /*
+  =======================================================
+  2. CHECK INVESTMENT PAYMENT
+  =======================================================
+  */
+
+  const investmentDoc =
+    await findInvestmentPayment(
+      checkoutRequestID
+    );
+
+  if (investmentDoc) {
+
+    console.log(
+      "💰 Investment payment found:",
+      checkoutRequestID
+    );
+
+    return investmentCallback(
+
+      checkoutRequestID,
+
+      callback,
+
+      resultCode,
+
+      resultDesc
+
+    );
+
+  }
+
+
+  /*
+  =======================================================
+  3. UNKNOWN PAYMENT
+  =======================================================
+  */
+
+  console.warn(
+    "⚠️ Unknown M-PESA CheckoutRequestID:",
     checkoutRequestID
   );
 
-if (marketplaceDoc) {
+  return {
 
-  console.log(
-    "🛒 Marketplace payment found:",
-    checkoutRequestID
-  );
+    handled: false,
 
-  return marketplaceCallback(
-
-    marketplaceDoc,
-
-    callback,
-
-    resultCode,
-
-    resultDesc
-
-  );
-
-}
-
-
-/*
-=======================================================
-2. CHECK INVESTMENT PAYMENT
-=======================================================
-*/
-
-const investmentDoc =
-  await findInvestmentPayment(
-    checkoutRequestID
-  );
-
-if (investmentDoc) {
-
-  console.log(
-    "💰 Investment payment found:",
-    checkoutRequestID
-  );
-
-  return investmentCallback(
+    reason:
+      "UNKNOWN_PAYMENT",
 
     checkoutRequestID,
 
-    callback,
-
-    resultCode,
-
-    resultDesc
-
-  );
-
-}
-
-
-/*
-=======================================================
-3. UNKNOWN PAYMENT
-=======================================================
-*/
-
-console.warn(
-  "⚠️ Unknown M-PESA CheckoutRequestID:",
-  checkoutRequestID
-);
-
-return {
-
-  handled: false,
-
-  reason:
-    "UNKNOWN_PAYMENT",
-
-  checkoutRequestID,
-
-};
+  };
 
 }
 
