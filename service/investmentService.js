@@ -220,8 +220,7 @@ async function initiateInvestment({
         amount:
           numericAmount,
 
-        accountReference:
-          `INVEST-${userId}`,
+        accountReference:"BIASHNET_INV",
 
         transactionDesc:
           "BIASHNET Investor Contribution",

@@ -5,7 +5,8 @@ BIASHNET PAYMENT COLLECTIONS
 */
 
 const COLLECTIONS = {
-
+    USERS:
+        "users",
     PRODUCTS:
         "products",
 

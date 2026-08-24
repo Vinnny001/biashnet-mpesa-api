@@ -6,32 +6,59 @@ const { db } = require("../config/firebase");
 SELLER AUTHORIZATION MIDDLEWARE
 =========================================================
 
-Purpose:
+FLOW:
 
-1. Require Firebase authentication
-2. Get seller from authenticated Firebase UID
-3. Verify seller profile exists
-4. Verify seller is active
-5. Attach seller information to req.seller
+Firebase token
+      ↓
+requireAuth
+      ↓
+req.user.uid
+      ↓
+users/{uid}
+      ↓
+verify seller role/status
+      ↓
+req.seller
+      ↓
+seller controller
+
 
 IMPORTANT:
 
-Never accept sellerId from the frontend as proof of ownership.
+There is NO sellers collection in the current
+BIASHNET structure.
 
-The seller is determined from:
+Seller information lives in:
 
-req.user.uid
+users/{uid}
 
+Example:
+
+users/{uid}
+    roles.seller: true
+    accountStatus: "active"
+    sellerVerified: true
+    sellerBadge: "golden"
+    name
+    email
+    phone
+    photoURL
+    listingsCount
+    ...
 =========================================================
 */
 
-async function sellerAuth(req, res, next) {
+async function sellerAuth(
+    req,
+    res,
+    next
+) {
 
     try {
 
         /*
         =================================================
-        GET AUTHENTICATED USER
+        GET AUTHENTICATED FIREBASE USER
         =================================================
         */
 
@@ -55,27 +82,55 @@ async function sellerAuth(req, res, next) {
 
         /*
         =================================================
-        GET SELLER PROFILE
+        GET USER PROFILE
         =================================================
         */
 
-        const sellerRef =
+        const userRef =
             db
-                .collection("sellers")
+                .collection("users")
                 .doc(userId);
 
 
-        const sellerSnap =
-            await sellerRef.get();
+        const userSnap =
+            await userRef.get();
 
 
         /*
         =================================================
-        SELLER NOT FOUND
+        USER NOT FOUND
         =================================================
         */
 
-        if (!sellerSnap.exists) {
+        if (!userSnap.exists) {
+
+            return res.status(403).json({
+
+                success: false,
+
+                message:
+                    "BIASHNET user profile not found."
+
+            });
+
+        }
+
+
+        const user =
+            userSnap.data();
+
+
+        /*
+        =================================================
+        VERIFY SELLER ROLE
+        =================================================
+        */
+
+        const isSeller =
+            user.roles?.seller === true;
+
+
+        if (!isSeller) {
 
             return res.status(403).json({
 
@@ -89,27 +144,23 @@ async function sellerAuth(req, res, next) {
         }
 
 
-        const seller =
-            sellerSnap.data();
-
-
         /*
         =================================================
-        CHECK SELLER STATUS
+        CHECK ACCOUNT STATUS
         =================================================
         */
 
-        if (
-            seller.status &&
-            ![
-                "ACTIVE",
-                "VERIFIED",
-                "APPROVED"
-            ].includes(
-                String(
-                    seller.status
-                ).toUpperCase()
+        const accountStatus =
+            String(
+                user.accountStatus || ""
             )
+                .trim()
+                .toLowerCase();
+
+
+        if (
+            accountStatus &&
+            accountStatus !== "active"
         ) {
 
             return res.status(403).json({
@@ -117,7 +168,7 @@ async function sellerAuth(req, res, next) {
                 success: false,
 
                 message:
-                    "Seller account is not active."
+                    "Your BIASHNET account is not active."
 
             });
 
@@ -126,12 +177,12 @@ async function sellerAuth(req, res, next) {
 
         /*
         =================================================
-        CHECK EXPLICIT ACTIVE FLAG
+        EXPLICIT SELLER DISABLE CHECK
         =================================================
         */
 
         if (
-            seller.active === false
+            user.sellerActive === false
         ) {
 
             return res.status(403).json({
@@ -139,7 +190,7 @@ async function sellerAuth(req, res, next) {
                 success: false,
 
                 message:
-                    "Seller account is disabled."
+                    "Your seller account is disabled."
 
             });
 
@@ -150,6 +201,13 @@ async function sellerAuth(req, res, next) {
         =================================================
         ATTACH SELLER
         =================================================
+
+        The controller/service can now use:
+
+            req.seller.id
+
+        as the authenticated seller UID.
+        =================================================
         */
 
         req.seller = {
@@ -157,7 +215,10 @@ async function sellerAuth(req, res, next) {
             id:
                 userId,
 
-            ...seller
+            uid:
+                userId,
+
+            ...user
 
         };
 
