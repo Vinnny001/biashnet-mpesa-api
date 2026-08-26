@@ -3,27 +3,6 @@ const sellerService = require("../service/sellerService");
 
 /*
 =========================================================
-PUBLIC SELLER CONTROLLER
-=========================================================
-
-These endpoints are for customers viewing a seller.
-
-IMPORTANT:
-
-There is NO authenticated seller identity here.
-
-sellerId comes from the URL because the customer is
-requesting a public seller storefront.
-
-Example:
-
-GET /api/public/sellers/ABC123
-=========================================================
-*/
-
-
-/*
-=========================================================
 GET PUBLIC SELLER
 =========================================================
 */
