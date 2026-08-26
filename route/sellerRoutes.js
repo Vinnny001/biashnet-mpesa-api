@@ -90,6 +90,29 @@ router.get(
     sellerController.getSummary
 );
 
+/*
+=========================================================
+SELLER FOLLOWERS
+=========================================================
+*/
+
+router.get(
+    "/:sellerId/follow-status",
+    requireAuth,
+    sellerController.getFollowStatus
+);
+
+router.post(
+    "/:sellerId/follow",
+    requireAuth,
+    sellerController.followSeller
+);
+
+router.delete(
+    "/:sellerId/follow",
+    requireAuth,
+    sellerController.unfollowSeller
+);
 
 /*
 =========================================================
@@ -157,6 +180,7 @@ router.get(
     sellerAuth,
     sellerController.getOrder
 );
+
 
 
 /*

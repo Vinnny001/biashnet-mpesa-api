@@ -676,7 +676,216 @@ async function getSummary(
 
  }
 
+/*
+=========================================================
+GET FOLLOW STATUS
+=========================================================
 
+GET /api/seller/:sellerId/follow-status
+
+The authenticated user is:
+
+req.user.uid
+
+The seller being viewed is:
+
+req.params.sellerId
+=========================================================
+*/
+
+async function getFollowStatus(
+    req,
+    res
+) {
+
+    try {
+
+        const followerId =
+            getSellerId(req);
+
+        const sellerId =
+            req.params.sellerId;
+
+
+        if (!sellerId) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Seller ID is required."
+
+            });
+
+        }
+
+
+        const result =
+            await sellerService.getFollowStatus(
+                sellerId,
+                followerId
+            );
+
+
+        return res.json({
+
+            success: true,
+
+            ...result
+
+        });
+
+    } catch (error) {
+
+        return handleError(
+            res,
+            error
+        );
+
+    }
+
+}
+
+
+/*
+=========================================================
+FOLLOW SELLER
+=========================================================
+
+POST /api/seller/:sellerId/follow
+
+IMPORTANT:
+
+followerId ALWAYS comes from:
+
+req.user.uid
+
+Never trust req.body.userId.
+=========================================================
+*/
+
+async function followSeller(
+    req,
+    res
+) {
+
+    try {
+
+        const followerId =
+            getSellerId(req);
+
+        const sellerId =
+            req.params.sellerId;
+
+
+        if (!sellerId) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Seller ID is required."
+
+            });
+
+        }
+
+
+        const result =
+            await sellerService.followSeller(
+                sellerId,
+                followerId
+            );
+
+
+        return res.status(
+            result.alreadyFollowing
+                ? 200
+                : 201
+        ).json({
+
+            success: true,
+
+            ...result
+
+        });
+
+    } catch (error) {
+
+        return handleError(
+            res,
+            error
+        );
+
+    }
+
+}
+
+
+/*
+=========================================================
+UNFOLLOW SELLER
+=========================================================
+
+DELETE /api/seller/:sellerId/follow
+=========================================================
+*/
+
+async function unfollowSeller(
+    req,
+    res
+) {
+
+    try {
+
+        const followerId =
+            getSellerId(req);
+
+        const sellerId =
+            req.params.sellerId;
+
+
+        if (!sellerId) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Seller ID is required."
+
+            });
+
+        }
+
+
+        const result =
+            await sellerService.unfollowSeller(
+                sellerId,
+                followerId
+            );
+
+
+        return res.json({
+
+            success: true,
+
+            ...result
+
+        });
+
+    } catch (error) {
+
+        return handleError(
+            res,
+            error
+        );
+
+    }
+
+}
 /*
 =========================================================
 EXPORTS
@@ -706,5 +915,8 @@ module.exports = {
     getDashboard,
 
     getSummary,
+    getFollowStatus,
+followSeller,
+unfollowSeller,
 
 };

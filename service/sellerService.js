@@ -242,6 +242,11 @@ async function getShop(sellerId) {
                 seller.listingsCount || 0
             ),
 
+        followersCount:
+            Number(
+                seller.followersCount || 0
+            ),
+
         ordersCount:
             Number(
                 seller.ordersCount || 0
@@ -267,6 +272,583 @@ async function getShop(sellerId) {
 
 }
 
+/* 
+=========================================================
+FOLLOWER SYSTEM
+=========================================================
+
+Firestore:
+
+followers/{sellerId}_{followerId}
+
+Example:
+
+followers/
+    SELLER_UID_USER_UID
+
+{
+    sellerId,
+    followerId,
+    createdAt
+}
+
+The authenticated user is ALWAYS the follower.
+
+The sellerId comes from the route/controller,
+but must never be trusted from the frontend
+without validating the seller.
+=========================================================
+*/
+
+
+/*
+=========================================================
+FOLLOW SELLER
+=========================================================
+*/
+
+async function followSeller(
+    followerId,
+    sellerId
+) {
+
+    if (!followerId) {
+
+        throw new Error(
+            "Follower ID is required."
+        );
+
+    }
+
+    if (!sellerId) {
+
+        throw new Error(
+            "Seller ID is required."
+        );
+
+    }
+
+
+    /*
+     * Prevent following yourself.
+     */
+
+    if (
+        followerId === sellerId
+    ) {
+
+        throw new Error(
+            "You cannot follow your own shop."
+        );
+
+    }
+
+
+    /*
+     * Make sure the target is actually
+     * an active seller.
+     */
+
+    await getSeller(
+        sellerId
+    );
+
+
+    const followerRef =
+        db
+            .collection(
+                "followers"
+            )
+            .doc(
+                `${sellerId}_${followerId}`
+            );
+
+
+    const followerSnapshot =
+        await followerRef.get();
+
+
+    /*
+     * Already following.
+     */
+
+    if (
+        followerSnapshot.exists
+    ) {
+
+        return {
+
+            success: true,
+
+            following: true,
+
+            alreadyFollowing: true,
+
+            sellerId,
+
+            followerId,
+
+        };
+
+    }
+
+
+    /*
+     * Create follower relationship.
+     */
+
+    await followerRef.set({
+
+        sellerId,
+
+        followerId,
+
+        createdAt:
+            FieldValue.serverTimestamp(),
+
+    });
+
+
+    /*
+     * Increment seller followers count.
+     */
+
+    await db
+        .collection(
+            COLLECTIONS.USERS
+        )
+        .doc(
+            sellerId
+        )
+        .update({
+
+            followersCount:
+                FieldValue.increment(1),
+
+            updatedAt:
+                FieldValue.serverTimestamp(),
+
+        });
+
+
+    /*
+     * Return updated count.
+     */
+
+    const seller =
+        await getSeller(
+            sellerId
+        );
+
+
+    return {
+
+        success: true,
+
+        following: true,
+
+        alreadyFollowing: false,
+
+        sellerId,
+
+        followerId,
+
+        followersCount:
+            Number(
+                seller.followersCount ||
+                0
+            ),
+
+    };
+
+}
+
+
+/*
+=========================================================
+UNFOLLOW SELLER
+=========================================================
+*/
+
+async function unfollowSeller(
+    followerId,
+    sellerId
+) {
+
+    if (!followerId) {
+
+        throw new Error(
+            "Follower ID is required."
+        );
+
+    }
+
+    if (!sellerId) {
+
+        throw new Error(
+            "Seller ID is required."
+        );
+
+    }
+
+
+    if (
+        followerId === sellerId
+    ) {
+
+        throw new Error(
+            "You cannot unfollow your own shop."
+        );
+
+    }
+
+
+    await getSeller(
+        sellerId
+    );
+
+
+    const followerRef =
+        db
+            .collection(
+                "followers"
+            )
+            .doc(
+                `${sellerId}_${followerId}`
+            );
+
+
+    const followerSnapshot =
+        await followerRef.get();
+
+
+    /*
+     * Already not following.
+     */
+
+    if (
+        !followerSnapshot.exists
+    ) {
+
+        const seller =
+            await getSeller(
+                sellerId
+            );
+
+        return {
+
+            success: true,
+
+            following: false,
+
+            alreadyFollowing: false,
+
+            sellerId,
+
+            followerId,
+
+            followersCount:
+                Number(
+                    seller.followersCount ||
+                    0
+                ),
+
+        };
+
+    }
+
+
+    /*
+     * Delete relationship.
+     */
+
+    await followerRef.delete();
+
+
+    /*
+     * Decrement count.
+
+     * IMPORTANT:
+     * Do not allow negative followersCount.
+     */
+
+    const seller =
+        await getSeller(
+            sellerId
+        );
+
+
+    const currentCount =
+        Number(
+            seller.followersCount ||
+            0
+        );
+
+
+    await db
+        .collection(
+            COLLECTIONS.USERS
+        )
+        .doc(
+            sellerId
+        )
+        .update({
+
+            followersCount:
+                Math.max(
+                    currentCount - 1,
+                    0
+                ),
+
+            updatedAt:
+                FieldValue.serverTimestamp(),
+
+        });
+
+
+    return {
+
+        success: true,
+
+        following: false,
+
+        alreadyFollowing: false,
+
+        sellerId,
+
+        followerId,
+
+        followersCount:
+            Math.max(
+                currentCount - 1,
+                0
+            ),
+
+    };
+
+}
+
+
+/*
+=========================================================
+CHECK FOLLOW STATUS
+=========================================================
+*/
+
+async function getFollowStatus(
+    followerId,
+    sellerId
+) {
+
+    if (!followerId) {
+
+        throw new Error(
+            "Follower ID is required."
+        );
+
+    }
+
+    if (!sellerId) {
+
+        throw new Error(
+            "Seller ID is required."
+        );
+
+    }
+
+
+    await getSeller(
+        sellerId
+    );
+
+
+    /*
+     * A seller follows themselves
+     * conceptually.
+     */
+
+    if (
+        followerId === sellerId
+    ) {
+
+        return {
+
+            following: false,
+
+            isOwner: true,
+
+            sellerId,
+
+            followerId,
+
+        };
+
+    }
+
+
+    const followerRef =
+        db
+            .collection(
+                "followers"
+            )
+            .doc(
+                `${sellerId}_${followerId}`
+            );
+
+
+    const snapshot =
+        await followerRef.get();
+
+
+    return {
+
+        following:
+            snapshot.exists,
+
+        isOwner: false,
+
+        sellerId,
+
+        followerId,
+
+    };
+
+}
+
+
+/*
+=========================================================
+GET FOLLOWERS
+=========================================================
+*/
+
+async function getFollowers(
+    sellerId,
+    options = {}
+) {
+
+    await getSeller(
+        sellerId
+    );
+
+
+    let limit =
+        Number(
+            options.limit || 50
+        );
+
+
+    if (
+        !Number.isInteger(limit) ||
+        limit <= 0
+    ) {
+
+        limit = 50;
+
+    }
+
+
+    if (limit > 100) {
+
+        limit = 100;
+
+    }
+
+
+    const snapshot =
+        await db
+            .collection(
+                "followers"
+            )
+            .where(
+                "sellerId",
+                "==",
+                sellerId
+            )
+            .limit(
+                limit
+            )
+            .get();
+
+
+    const followers = [];
+
+
+    for (
+        const followerDoc
+        of snapshot.docs
+    ) {
+
+        const data =
+            followerDoc.data();
+
+
+        /*
+         * Load public follower profile.
+         */
+
+        const userSnapshot =
+            await db
+                .collection(
+                    COLLECTIONS.USERS
+                )
+                .doc(
+                    data.followerId
+                )
+                .get();
+
+
+        if (
+            !userSnapshot.exists
+        ) {
+
+            continue;
+
+        }
+
+
+        const user =
+            userSnapshot.data();
+
+
+        followers.push({
+
+            id:
+                data.followerId,
+
+            name:
+                user.name ||
+                user.fullName ||
+                "",
+
+            photoURL:
+                user.photoURL ||
+                user.photo ||
+                "",
+
+            username:
+                user.username ||
+                "",
+
+            createdAt:
+                data.createdAt ||
+                null,
+
+        });
+
+    }
+
+
+    return {
+
+        followers,
+
+        count:
+            followers.length,
+
+    };
+
+}
 
 /*
 =========================================================
@@ -1687,6 +2269,18 @@ module.exports = {
 
     updateShop,
 
+    /* FOLLOWERS */
+
+    followSeller,
+
+    unfollowSeller,
+
+    getFollowStatus,
+
+    getFollowers,
+
+    /* PRODUCTS */
+
     getProducts,
 
     getProduct,
@@ -1697,9 +2291,13 @@ module.exports = {
 
     deleteProduct,
 
+    /* ORDERS */
+
     getOrders,
 
     getOrder,
+
+    /* DASHBOARD */
 
     getDashboard,
 
