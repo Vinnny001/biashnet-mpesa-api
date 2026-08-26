@@ -272,6 +272,547 @@ async function getShop(sellerId) {
 
 }
 
+/*
+=========================================================
+GET PUBLIC SELLER
+=========================================================
+
+Used when a customer visits a seller storefront.
+
+Example:
+
+GET /api/public/sellers/:sellerId
+
+IMPORTANT:
+
+- sellerId identifies the seller being viewed
+- This is NOT the authenticated user's ID
+- Never expose private user/account fields
+=========================================================
+*/
+
+async function getPublicSeller(
+    sellerId
+) {
+
+    if (!sellerId) {
+
+        const error =
+            new Error(
+                "Seller ID is required."
+            );
+
+        error.statusCode = 400;
+
+        throw error;
+
+    }
+
+
+    const sellerRef =
+        db
+            .collection(
+                COLLECTIONS.USERS
+            )
+            .doc(
+                sellerId
+            );
+
+
+    const snapshot =
+        await sellerRef.get();
+
+
+    if (!snapshot.exists) {
+
+        const error =
+            new Error(
+                "Seller not found."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+
+    const seller =
+        snapshot.data();
+
+
+    /*
+    =====================================================
+    VERIFY SELLER
+    =====================================================
+    */
+
+    if (
+        seller.roles?.seller !== true
+    ) {
+
+        const error =
+            new Error(
+                "This account is not a seller."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+
+    /*
+    =====================================================
+    ONLY ACTIVE SELLERS ARE PUBLIC
+    =====================================================
+    */
+
+    if (
+        seller.accountStatus &&
+        seller.accountStatus !== "active"
+    ) {
+
+        const error =
+            new Error(
+                "This seller is currently unavailable."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+
+    /*
+    =====================================================
+    SHOP VISIBILITY
+    =====================================================
+    */
+
+    if (
+        seller.shopVisible === false
+    ) {
+
+        const error =
+            new Error(
+                "This seller shop is currently hidden."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+
+    /*
+    =====================================================
+    PUBLIC SELLER PROFILE
+    =====================================================
+
+    NEVER return:
+
+    - email
+    - phone
+    - roles
+    - wallet
+    - earnings
+    - subscription internals
+    - authentication information
+    - private account information
+    =====================================================
+    */
+
+    return {
+
+        id:
+            snapshot.id,
+
+        sellerId:
+            snapshot.id,
+
+        name:
+            seller.name ||
+            seller.fullName ||
+            "",
+
+        photoURL:
+            seller.photoURL ||
+            seller.photo ||
+            "",
+
+        bio:
+            seller.bio ||
+            "",
+
+        location:
+            seller.location ||
+            "",
+
+        verified:
+            seller.verified === true,
+
+        sellerVerified:
+            seller.roles?.sellerVerified === true,
+
+        badgeLevel:
+            seller.badgeLevel ||
+            seller.roles?.sellerBadge ||
+            null,
+
+        sellerBadge:
+            seller.roles?.sellerBadge ||
+            null,
+
+        sellerRating:
+            Number(
+                seller.sellerRating ||
+                seller.averageRating ||
+                0
+            ),
+
+        totalRatings:
+            Number(
+                seller.totalRatings ||
+                0
+            ),
+
+        listingsCount:
+            Number(
+                seller.listingsCount ||
+                seller.totalListings ||
+                0
+            ),
+
+        followersCount:
+            Number(
+                seller.followersCount ||
+                0
+            ),
+
+        ordersCount:
+            Number(
+                seller.ordersCount ||
+                0
+            ),
+
+        completedOrders:
+            Number(
+                seller.completedOrders ||
+                0
+            ),
+
+        subscriptionActive:
+            seller.subscriptionActive === true,
+
+        subscriptionPlan:
+            seller.subscriptionPlan ||
+            null,
+
+        subscriptionExpiresAt:
+            seller.subscriptionExpiresAt ||
+            null,
+
+    };
+
+}
+
+/*
+=========================================================
+GET PUBLIC SELLER PRODUCTS
+=========================================================
+
+Returns products that customers are allowed to see.
+
+Example:
+
+GET /api/public/sellers/:sellerId/products?limit=50
+
+IMPORTANT:
+
+Only:
+
+- active seller
+- active products
+- available/public products
+
+are returned.
+
+Seller ownership is determined from:
+
+products.userId
+=========================================================
+*/
+
+async function getPublicSellerProducts(
+    sellerId,
+    options = {}
+) {
+
+    if (!sellerId) {
+
+        const error =
+            new Error(
+                "Seller ID is required."
+            );
+
+        error.statusCode = 400;
+
+        throw error;
+
+    }
+
+
+    /*
+    =====================================================
+    VERIFY PUBLIC SELLER
+    =====================================================
+    */
+
+    const seller =
+        await getPublicSeller(
+            sellerId
+        );
+
+
+    /*
+    =====================================================
+    LIMIT
+    =====================================================
+    */
+
+    let limit =
+        Number(
+            options.limit || 50
+        );
+
+
+    if (
+        !Number.isInteger(limit) ||
+        limit <= 0
+    ) {
+
+        limit = 50;
+
+    }
+
+
+    if (limit > 100) {
+
+        limit = 100;
+
+    }
+
+
+    /*
+    =====================================================
+    LOAD PRODUCTS
+    =====================================================
+    */
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.PRODUCTS
+            )
+            .where(
+                "userId",
+                "==",
+                sellerId
+            )
+            .where(
+                "isActive",
+                "==",
+                true
+            )
+            .limit(
+                limit
+            )
+            .get();
+
+
+    const products = [];
+
+
+    for (
+        const productDoc
+        of snapshot.docs
+    ) {
+
+        const data =
+            productDoc.data();
+
+
+        /*
+        =================================================
+        PUBLIC PRODUCT FILTER
+        =================================================
+
+        Don't expose internal/private fields.
+        */
+
+        products.push({
+
+            id:
+                productDoc.id,
+
+            title:
+                data.title ||
+                "",
+
+            description:
+                data.description ||
+                "",
+
+            category:
+                data.category ||
+                "",
+
+            condition:
+                data.condition ||
+                "",
+
+            price:
+                money(
+                    data.price
+                ),
+
+            markedPrice:
+                data.markedPrice !== undefined
+                    ? money(
+                        data.markedPrice
+                    )
+                    : null,
+
+            discount:
+                Number(
+                    data.discount ||
+                    0
+                ),
+
+            stock:
+                Number(
+                    data.stock ||
+                    0
+                ),
+
+            location:
+                data.location ||
+                seller.location ||
+                "",
+
+            images:
+                Array.isArray(
+                    data.images
+                )
+                    ? data.images
+                    : [],
+
+            image:
+                data.image ||
+                data.imageUrl ||
+                "",
+
+            flashSale:
+                data.flashSale === true,
+
+            flashSalePrice:
+                data.flashSalePrice !== undefined
+                    ? money(
+                        data.flashSalePrice
+                    )
+                    : null,
+
+            flashSaleStart:
+                data.flashSaleStart ||
+                null,
+
+            flashSaleEnd:
+                data.flashSaleEnd ||
+                null,
+
+            sellerWhatsapp:
+                seller.whatsappEnabled === false
+                    ? null
+                    : (
+                        data.sellerWhatsapp ||
+                        null
+                    ),
+
+            views:
+                Number(
+                    data.views ||
+                    0
+                ),
+
+            createdAt:
+                data.createdAt ||
+                null,
+
+            updatedAt:
+                data.updatedAt ||
+                null,
+
+        });
+
+    }
+
+
+    /*
+    =====================================================
+    SORT NEWEST FIRST
+    =====================================================
+    */
+
+    products.sort(
+        (a, b) => {
+
+            const aTime =
+                a.createdAt?.toMillis
+                    ? a.createdAt.toMillis()
+                    : (
+                        a.createdAt
+                            ? new Date(
+                                a.createdAt
+                            ).getTime()
+                            : 0
+                    );
+
+
+            const bTime =
+                b.createdAt?.toMillis
+                    ? b.createdAt.toMillis()
+                    : (
+                        b.createdAt
+                            ? new Date(
+                                b.createdAt
+                            ).getTime()
+                            : 0
+                    );
+
+
+            return bTime - aTime;
+
+        }
+    );
+
+
+    return {
+
+        seller,
+
+        products,
+
+        count:
+            products.length,
+
+    };
+
+}
+
 /* 
 =========================================================
 FOLLOWER SYSTEM
@@ -2266,7 +2807,8 @@ module.exports = {
     getSeller,
 
     getShop,
-
+    getPublicSeller,
+    getPublicSellerProducts,
     updateShop,
 
     /* FOLLOWERS */

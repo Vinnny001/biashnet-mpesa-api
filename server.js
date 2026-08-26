@@ -8,6 +8,7 @@ const orderRoutes = require("./route/orderRoutes");
 const withdrawalRoutes = require("./route/withdrawalRoutes");
 const webhookRoutes = require("./route/webhookRoutes");
 const sellerRoutes = require("./route/sellerRoutes");
+const publicSellerRoutes = require("./route/publicSellerRoutes");
 const app = express();
 
 app.use(cors());
@@ -40,6 +41,10 @@ app.get("/", (req, res) => {
 app.use(
     "/api/seller",
     sellerRoutes
+);
+app.use(
+    "/api/public/sellers",
+    publicSellerRoutes
 );
 /*
 =========================================================
