@@ -676,6 +676,8 @@ async function getSummary(
 
  }
 
+
+
 /*
 =========================================================
 GET FOLLOW STATUS
@@ -683,13 +685,10 @@ GET FOLLOW STATUS
 
 GET /api/seller/:sellerId/follow-status
 
-The authenticated user is:
+followerId = authenticated user
+sellerId   = seller being viewed
 
-req.user.uid
-
-The seller being viewed is:
-
-req.params.sellerId
+ANY AUTHENTICATED USER CAN FOLLOW A SELLER.
 =========================================================
 */
 
@@ -723,8 +722,8 @@ async function getFollowStatus(
 
         const result =
             await sellerService.getFollowStatus(
-                sellerId,
-                followerId
+                followerId,
+                sellerId
             );
 
 
@@ -755,13 +754,7 @@ FOLLOW SELLER
 
 POST /api/seller/:sellerId/follow
 
-IMPORTANT:
-
-followerId ALWAYS comes from:
-
-req.user.uid
-
-Never trust req.body.userId.
+ANY AUTHENTICATED USER CAN FOLLOW A SELLER.
 =========================================================
 */
 
@@ -793,10 +786,21 @@ async function followSeller(
         }
 
 
+        /*
+        IMPORTANT:
+
+        service signature is:
+
+        followSeller(
+            followerId,
+            sellerId
+        )
+        */
+
         const result =
             await sellerService.followSeller(
-                sellerId,
-                followerId
+                followerId,
+                sellerId
             );
 
 
@@ -861,10 +865,19 @@ async function unfollowSeller(
         }
 
 
+        /*
+        service signature:
+
+        unfollowSeller(
+            followerId,
+            sellerId
+        )
+        */
+
         const result =
             await sellerService.unfollowSeller(
-                sellerId,
-                followerId
+                followerId,
+                sellerId
             );
 
 
