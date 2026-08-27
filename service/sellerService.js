@@ -527,21 +527,21 @@ GET PUBLIC SELLER PRODUCTS
 
 Returns products that customers are allowed to see.
 
-Example:
+Supports:
 
-GET /api/public/sellers/:sellerId/products?limit=50
+GET /api/public/sellers/:sellerId/products?page=1&limit=20
+GET /api/public/sellers/:sellerId/products?page=2&limit=20
+GET /api/public/sellers/:sellerId/products?page=3&limit=20
 
 IMPORTANT:
 
-Only:
+- sellerId identifies the seller being viewed
+- seller must be public and active
+- only active products are returned
+- products are sorted newest first
+- frontend receives explicit hasMore information
 
-- active seller
-- active products
-- available/public products
-
-are returned.
-
-Seller ownership is determined from:
+Ownership is determined from:
 
 products.userId
 =========================================================
@@ -580,36 +580,63 @@ async function getPublicSellerProducts(
 
     /*
     =====================================================
-    LIMIT
+    PAGINATION
     =====================================================
     */
 
+    let page =
+        Number(
+            options.page || 1
+        );
+
+
     let limit =
         Number(
-            options.limit || 50
+            options.limit || 20
         );
 
 
     if (
-        !Number.isInteger(limit) ||
-        limit <= 0
+        !Number.isInteger(page) ||
+        page < 1
     ) {
+
+        page = 1;
+
+    }
+
+
+    if (
+        !Number.isInteger(limit) ||
+        limit < 1
+    ) {
+
+        limit = 20;
+
+    }
+
+
+    /*
+     * Prevent very large requests.
+     */
+
+    if (limit > 50) {
 
         limit = 50;
 
     }
 
 
-    if (limit > 100) {
-
-        limit = 100;
-
-    }
-
-
     /*
     =====================================================
-    LOAD PRODUCTS
+    LOAD SELLER PRODUCTS
+    =====================================================
+
+    We intentionally fetch the seller's public products
+    first, then paginate after sorting.
+
+    This guarantees page 1/page 2/page 3 do not return
+    the same products.
     =====================================================
     */
 
@@ -628,11 +655,14 @@ async function getPublicSellerProducts(
                 "==",
                 true
             )
-            .limit(
-                limit
-            )
             .get();
 
+
+    /*
+    =====================================================
+    BUILD PUBLIC PRODUCT LIST
+    =====================================================
+    */
 
     const products = [];
 
@@ -648,10 +678,8 @@ async function getPublicSellerProducts(
 
         /*
         =================================================
-        PUBLIC PRODUCT FILTER
+        BASIC PUBLIC PRODUCT
         =================================================
-
-        Don't expose internal/private fields.
         */
 
         products.push({
@@ -774,11 +802,15 @@ async function getPublicSellerProducts(
                 a.createdAt?.toMillis
                     ? a.createdAt.toMillis()
                     : (
-                        a.createdAt
-                            ? new Date(
+                        a.createdAt?.seconds
+                            ? a.createdAt.seconds * 1000
+                            : (
                                 a.createdAt
-                            ).getTime()
-                            : 0
+                                    ? new Date(
+                                        a.createdAt
+                                    ).getTime()
+                                    : 0
+                            )
                     );
 
 
@@ -786,12 +818,38 @@ async function getPublicSellerProducts(
                 b.createdAt?.toMillis
                     ? b.createdAt.toMillis()
                     : (
-                        b.createdAt
-                            ? new Date(
+                        b.createdAt?.seconds
+                            ? b.createdAt.seconds * 1000
+                            : (
                                 b.createdAt
-                            ).getTime()
-                            : 0
+                                    ? new Date(
+                                        b.createdAt
+                                    ).getTime()
+                                    : 0
+                            )
                     );
+
+
+            /*
+             * Stable tie-breaker.
+             *
+             * This helps prevent inconsistent ordering when
+             * two products have the same createdAt.
+             */
+
+            if (
+                bTime === aTime
+            ) {
+
+                return String(
+                    a.id
+                ).localeCompare(
+                    String(
+                        b.id
+                    )
+                );
+
+            }
 
 
             return bTime - aTime;
@@ -800,14 +858,95 @@ async function getPublicSellerProducts(
     );
 
 
+    /*
+    =====================================================
+    TOTAL PUBLIC PRODUCTS
+    =====================================================
+    */
+
+    const total =
+        products.length;
+
+
+    /*
+    =====================================================
+    CALCULATE PAGE RANGE
+    =====================================================
+    */
+
+    const startIndex =
+        (page - 1) * limit;
+
+
+    const endIndex =
+        startIndex + limit;
+
+
+    /*
+    =====================================================
+    PAGE PRODUCTS
+    =====================================================
+    */
+
+    const paginatedProducts =
+        products.slice(
+            startIndex,
+            endIndex
+        );
+
+
+    /*
+    =====================================================
+    HAS MORE
+    =====================================================
+    */
+
+    const hasMore =
+        endIndex < total;
+
+
+    /*
+    =====================================================
+    TOTAL PAGES
+    =====================================================
+    */
+
+    const totalPages =
+        total > 0
+            ? Math.ceil(
+                total / limit
+            )
+            : 0;
+
+
+    /*
+    =====================================================
+    RETURN
+    =====================================================
+    */
+
     return {
 
         seller,
 
-        products,
+        products:
+            paginatedProducts,
+
+        items:
+            paginatedProducts,
 
         count:
-            products.length,
+            paginatedProducts.length,
+
+        total,
+
+        page,
+
+        limit,
+
+        hasMore,
+
+        totalPages,
 
     };
 

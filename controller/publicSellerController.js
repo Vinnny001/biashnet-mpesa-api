@@ -1,4 +1,5 @@
-const sellerService = require("../service/sellerService");
+const sellerService =
+    require("../service/sellerService");
 
 
 /*
@@ -75,6 +76,16 @@ async function getPublicSeller(
 =========================================================
 GET PUBLIC SELLER PRODUCTS
 =========================================================
+
+GET:
+
+/api/public/sellers/:sellerId/products?page=1&limit=20
+
+The frontend sends:
+
+page
+limit
+=========================================================
 */
 
 async function getPublicSellerProducts(
@@ -102,12 +113,23 @@ async function getPublicSellerProducts(
         }
 
 
+        /*
+        =====================================================
+        PASS BOTH PAGE AND LIMIT TO SERVICE
+        =====================================================
+        */
+
         const result =
             await sellerService.getPublicSellerProducts(
                 sellerId,
                 {
+
+                    page:
+                        req.query.page,
+
                     limit:
-                        req.query.limit
+                        req.query.limit,
+
                 }
             );
 
@@ -116,7 +138,7 @@ async function getPublicSellerProducts(
 
             success: true,
 
-            ...result
+            ...result,
 
         });
 
