@@ -489,14 +489,14 @@ async function marketplaceCallback(
     callbackPhoneNumber:
       phone || null,
 
-    merchantRequestId:
+    merchantRequestID:
       callback.MerchantRequestID ||
-      payment.merchantRequestId ||
+      payment.merchantRequestID ||
       null,
 
-    checkoutRequestId:
+    checkoutRequestID:
       callback.CheckoutRequestID ||
-      payment.checkoutRequestId ||
+      payment.checkoutRequestID ||
       null,
 
     providerResponse:
@@ -918,8 +918,7 @@ COLLECTIONS.PAYMENTS
 
 Uses:
 
-checkoutRequestId
-
+checkoutRequestID
 =========================================================
 */
 
@@ -937,7 +936,7 @@ async function findMarketplacePayment(
         COLLECTIONS.PAYMENTS
       )
       .where(
-        "checkoutRequestId",
+        "checkoutRequestID",
         "==",
         checkoutRequestID
       )
