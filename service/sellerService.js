@@ -208,6 +208,8 @@ async function getShop(sellerId) {
             seller.location ||
             "",
 
+
+
         verified:
             seller.verified === true,
 
@@ -451,6 +453,22 @@ async function getPublicSeller(
         location:
             seller.location ||
             "",
+
+             /* =====================================================
+       PUBLIC CONTACT
+       ===================================================== */
+
+    whatsappEnabled:
+        seller.whatsappEnabled !== false,
+
+    whatsappNumber:
+        seller.whatsappEnabled === false
+            ? null
+            : (
+                seller.sellerWhatsapp ||
+                seller.phone ||
+                null
+            ),
 
         verified:
             seller.verified === true,

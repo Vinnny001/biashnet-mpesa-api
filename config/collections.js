@@ -13,6 +13,9 @@ const COLLECTIONS = {
     ORDERS:
         "marketplaceOrders",
 
+    MARKETPLACE_RECEIPTS:
+  "marketplaceReceipts",
+
     PAYMENTS:
         "marketplacePayments",
 
@@ -39,6 +42,9 @@ const COLLECTIONS = {
 
     PAYMENT_SETTINGS:
         "marketplaceSettings",
+
+    NOTIFICATIONS:
+    "notifications",
 
 };
 

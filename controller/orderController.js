@@ -315,7 +315,11 @@ async function getMyOrdersController(req, res) {
 
         const orders =
             await getBuyerOrders(
-                buyerId
+                buyerId,
+                {
+                    limit:
+                        req.query.limit
+                }
             );
 
 
@@ -324,6 +328,9 @@ async function getMyOrdersController(req, res) {
             success: true,
 
             orders,
+
+            count:
+                orders.length,
 
         });
 
@@ -336,7 +343,9 @@ async function getMyOrdersController(req, res) {
         );
 
 
-        return res.status(400).json({
+        return res.status(
+            error.statusCode || 400
+        ).json({
 
             success: false,
 
@@ -349,7 +358,6 @@ async function getMyOrdersController(req, res) {
     }
 
 }
-
 
 /*
 =========================================================

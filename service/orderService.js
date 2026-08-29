@@ -1384,6 +1384,233 @@ async function getBuyerOrder({
 
 /*
 =========================================================
+GET ALL BUYER ORDERS
+=========================================================
+
+Returns all marketplace orders belonging to the
+authenticated buyer.
+
+IMPORTANT:
+
+buyerId MUST come from Firebase Authentication.
+
+The caller must NEVER provide buyerId from:
+
+- req.body
+- req.query
+- req.params
+
+Supports optional limit.
+
+Example:
+
+getBuyerOrders(
+    buyerId,
+    {
+        limit: 50
+    }
+)
+=========================================================
+*/
+
+async function getBuyerOrders(
+    buyerId,
+    options = {}
+) {
+
+    /*
+    =====================================================
+    VALIDATE BUYER
+    =====================================================
+    */
+
+    if (!buyerId) {
+
+        throw new Error(
+            "Buyer ID is required."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    LIMIT
+    =====================================================
+    */
+
+    let limit =
+        Number(
+            options.limit || 50
+        );
+
+
+    if (
+        !Number.isInteger(limit) ||
+        limit <= 0
+    ) {
+
+        limit = 50;
+
+    }
+
+
+    /*
+    * Protect the backend from unnecessarily
+    * large requests.
+    */
+
+    if (
+        limit > 100
+    ) {
+
+        limit = 100;
+
+    }
+
+
+    /*
+    =====================================================
+    QUERY BUYER ORDERS
+    =====================================================
+    */
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .where(
+                "buyerId",
+                "==",
+                buyerId
+            )
+            .limit(
+                limit
+            )
+            .get();
+
+
+    /*
+    =====================================================
+    BUILD ORDERS
+    =====================================================
+    */
+
+    const orders =
+        snapshot.docs.map(
+            (doc) => {
+
+                const data =
+                    doc.data();
+
+
+                return {
+
+                    id:
+                        doc.id,
+
+                    orderId:
+                        data.orderId ||
+                        doc.id,
+
+                    ...data,
+
+                };
+
+            }
+        );
+
+
+    /*
+    =====================================================
+    SORT NEWEST FIRST
+    =====================================================
+
+    We sort in JavaScript so this remains compatible
+    with the current Firestore query and avoids making
+    the service dependent on a composite index.
+    =====================================================
+    */
+
+    orders.sort(
+        (a, b) => {
+
+            const getTime =
+                (value) => {
+
+                    if (
+                        value?.toMillis
+                    ) {
+
+                        return value.toMillis();
+
+                    }
+
+
+                    if (
+                        value?.seconds
+                    ) {
+
+                        return (
+                            Number(
+                                value.seconds
+                            ) * 1000
+                        );
+
+                    }
+
+
+                    if (
+                        value
+                    ) {
+
+                        const parsed =
+                            new Date(
+                                value
+                            ).getTime();
+
+
+                        return Number.isFinite(
+                            parsed
+                        )
+                            ? parsed
+                            : 0;
+
+                    }
+
+
+                    return 0;
+
+                };
+
+
+            return (
+                getTime(
+                    b.createdAt
+                ) -
+                getTime(
+                    a.createdAt
+                )
+            );
+
+        }
+    );
+
+
+    /*
+    =====================================================
+    RETURN
+    =====================================================
+    */
+
+    return orders;
+
+}
+
+
+/*
+=========================================================
 GET SELLER ORDER
 =========================================================
 */
@@ -1433,19 +1660,48 @@ EXPORTS
 
 module.exports = {
 
+    /*
+    -----------------------------------------------------
+    ORDER READ
+    -----------------------------------------------------
+    */
+
     getOrder,
 
     getBuyerOrder,
 
+    getBuyerOrders,
+
     getSellerOrder,
+
+
+    /*
+    -----------------------------------------------------
+    AUTHORIZATION
+    -----------------------------------------------------
+    */
 
     verifyBuyer,
 
     verifySeller,
 
+
+    /*
+    -----------------------------------------------------
+    PAYMENT
+    -----------------------------------------------------
+    */
+
     markPaymentInitiated,
 
     markOrderPaid,
+
+
+    /*
+    -----------------------------------------------------
+    COMPLETION
+    -----------------------------------------------------
+    */
 
     completeOrderWithCode,
 

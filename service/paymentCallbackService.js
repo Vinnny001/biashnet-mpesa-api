@@ -35,7 +35,19 @@ const {
   updateInvestmentStats,
 } = require("./investmentStats");
 
+const {
+  generateOrderCompletionCode,
+} = require("./orderCompletionService");
 
+const {
+  createMarketplaceReceipt,
+} = require("./receiptService");
+
+const {
+  notifyBuyerPaymentSuccess,
+  notifyBuyerCompletionCode,
+  notifySellerNewOrder,
+} = require("./marketplaceNotificationService");
 /*
 =========================================================
 CALLBACK METADATA HELPER
@@ -254,16 +266,222 @@ async function marketplaceCallback(
 
     });
 
+    /*
+=========================================================
+POST-PAYMENT MARKETPLACE PROCESSING
+=========================================================
+*/
+
+let completionResult;
+let receiptResult;
+
+try {
+
+  /*
+  -------------------------------------------------------
+  1. GENERATE COMPLETION CODE
+  -------------------------------------------------------
+  */
+
+  completionResult =
+    await generateOrderCompletionCode(
+      payment.orderId
+    );
+
+
+  /*
+  -------------------------------------------------------
+  2. CREATE MARKETPLACE RECEIPT
+  -------------------------------------------------------
+  */
+
+  receiptResult =
+    await createMarketplaceReceipt(
+      payment.orderId
+    );
+
+
+  /*
+  -------------------------------------------------------
+  3. GET UPDATED ORDER
+  -------------------------------------------------------
+  */
+
+  const orderSnap =
+    await db
+      .collection(COLLECTIONS.ORDERS)
+      .doc(payment.orderId)
+      .get();
+
+  if (!orderSnap.exists) {
+
+    throw new Error(
+      "Order not found after payment processing."
+    );
+
+  }
+
+  const order =
+    orderSnap.data();
+
+
+  /*
+  -------------------------------------------------------
+  4. BUYER PAYMENT SUCCESS
+  -------------------------------------------------------
+  */
+
+  await notifyBuyerPaymentSuccess({
+
+    buyerId:
+      order.buyerId,
+
+    orderId:
+      payment.orderId,
+
+    amount,
+
+    receiptNumber:
+      receipt,
+
+  });
+
+
+  /*
+  -------------------------------------------------------
+  5. BUYER COMPLETION CODE
+  -------------------------------------------------------
+  */
+
+  await notifyBuyerCompletionCode({
+
+    buyerId:
+      order.buyerId,
+
+    orderId:
+      payment.orderId,
+
+  });
+
+
+  /*
+  -------------------------------------------------------
+  6. SELLER NOTIFICATIONS
+  -------------------------------------------------------
+  */
+
+  for (
+    const seller
+    of order.sellerBreakdown || []
+  ) {
+
+    if (!seller.sellerId) {
+      continue;
+    }
+
+    await notifySellerNewOrder({
+
+      sellerId:
+        seller.sellerId,
+
+      orderId:
+        payment.orderId,
+
+      amount:
+        seller.grossAmount ||
+        seller.sellerGross ||
+        seller.grossAmount ||
+        0,
+
+    });
+
+  }
+
+
+  /*
+  -------------------------------------------------------
+  7. SAVE REFERENCES
+  -------------------------------------------------------
+  */
+
+  await orderSnap.ref.update({
+
+    receiptId:
+      receiptResult.receiptId,
+
+    receiptNumber:
+      receipt,
+
+    orderCompletionCodeStatus:
+      "ACTIVE",
+
+    updatedAt:
+      new Date(),
+
+  });
+
+} catch (postPaymentError) {
+
+  console.error(
+    "⚠️ Post-payment processing failed:",
+    postPaymentError
+  );
+
+  /*
+  IMPORTANT:
+  Payment remains COMPLETED.
+  */
+
+  await ref.update({
+
+    callbackProcessingStatus:
+      "POST_PAYMENT_PROCESSING_FAILED",
+
+    callbackProcessingError:
+      postPaymentError.message,
+
+    receivedByPlatform:
+      true,
+
+    updatedAt:
+      new Date(),
+
+  });
+
+}
+
     return {
 
-      handled: true,
+  handled: true,
 
-      requiresReview: true,
+  success: true,
 
-      reason:
-        "MISSING_MPESA_RECEIPT",
+  alreadyProcessed:
+    result?.alreadyProcessed || false,
 
-    };
+  status:
+    PAYMENT_STATUS.COMPLETED,
+
+  orderId:
+    payment.orderId,
+
+  paymentId:
+    payment.paymentId || doc.id,
+
+  receiptNumber:
+    receipt,
+
+  transactionId:
+    result?.providerTransactionId ||
+    receipt,
+
+  receiptId:
+    receiptResult?.receiptId || null,
+
+  completionCodeGenerated:
+    Boolean(completionResult),
+
+};
 
   }
 
@@ -551,6 +769,9 @@ async function marketplaceCallback(
       receipt,
 
   };
+
+
+  
 
 }
 

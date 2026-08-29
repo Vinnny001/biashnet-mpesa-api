@@ -9,6 +9,12 @@ const withdrawalRoutes = require("./route/withdrawalRoutes");
 const webhookRoutes = require("./route/webhookRoutes");
 const sellerRoutes = require("./route/sellerRoutes");
 const publicSellerRoutes = require("./route/publicSellerRoutes");
+const receiptRoutes =
+  require("./route/receiptRoutes");
+
+const orderCompletionRoutes =
+  require("./route/orderCompletionRoutes");
+
 const app = express();
 
 app.use(cors());
@@ -45,6 +51,16 @@ app.use(
 app.use(
     "/api/public/sellers",
     publicSellerRoutes
+);
+
+app.use(
+  "/api/marketplace/receipts",
+  receiptRoutes
+);
+
+app.use(
+  "/api/marketplace/order-completion",
+  orderCompletionRoutes
 );
 /*
 =========================================================
