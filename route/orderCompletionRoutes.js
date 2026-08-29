@@ -10,7 +10,7 @@ const {
 
 const {
   requireAuth,
-} = require("../middleware/authMiddleware");
+} = require("../middleware/auth");
 
 
 /*
