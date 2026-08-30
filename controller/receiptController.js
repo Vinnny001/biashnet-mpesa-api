@@ -3,42 +3,134 @@ const {
 } = require("../service/receiptService");
 
 
+/*
+=========================================================
+GET MARKETPLACE RECEIPT
+=========================================================
+
+GET
+
+/api/orders/:orderId/receipt
+
+AUTHENTICATION:
+
+Firebase Authentication
+        ↓
+req.user.uid
+        ↓
+buyerId
+
+IMPORTANT:
+
+NEVER accept buyerId from:
+
+- req.body
+- req.query
+- req.params
+
+The authenticated Firebase UID is the buyer identity.
+=========================================================
+*/
+
 async function getReceipt(req, res) {
 
   try {
 
-    const buyerId =
-      req.user.uid;
+    /*
+    =====================================================
+    AUTHENTICATED BUYER
+    =====================================================
+    */
 
-    const {
-      orderId,
-    } = req.params;
+    const buyerId =
+      req.user?.uid;
+
+
+    if (!buyerId) {
+
+      return res.status(401).json({
+
+        success: false,
+
+        message:
+          "Authentication required.",
+
+      });
+
+    }
+
+
+    /*
+    =====================================================
+    ORDER ID
+    =====================================================
+    */
+
+    const orderId =
+      req.params?.orderId;
+
 
     if (!orderId) {
 
       return res.status(400).json({
+
         success: false,
-        message: "Order ID is required.",
+
+        message:
+          "Order ID is required.",
+
       });
 
     }
 
+
+    /*
+    =====================================================
+    GET RECEIPT
+    =====================================================
+    */
+
     const receipt =
       await getMarketplaceReceipt({
-        orderId,
-        buyerId,
+
+        orderId:
+
+          String(orderId).trim(),
+
+        buyerId:
+
+          String(buyerId).trim(),
+
       });
+
+
+    /*
+    =====================================================
+    RECEIPT NOT FOUND
+    =====================================================
+    */
 
     if (!receipt) {
 
       return res.status(404).json({
+
         success: false,
-        message: "Receipt not found.",
+
+        message:
+          "Receipt not found.",
+
       });
 
     }
 
-    return res.json({
+
+    /*
+    =====================================================
+    SUCCESS
+    =====================================================
+    */
+
+    return res.status(200).json({
 
       success: true,
 
@@ -53,11 +145,35 @@ async function getReceipt(req, res) {
       error
     );
 
-    return res.status(500).json({
+
+    /*
+    =====================================================
+    STATUS CODE
+    =====================================================
+    */
+
+    const statusCode =
+      Number.isInteger(
+        error?.statusCode
+      )
+        ? error.statusCode
+        : 400;
+
+
+    /*
+    =====================================================
+    ERROR RESPONSE
+    =====================================================
+    */
+
+    return res.status(
+      statusCode
+    ).json({
 
       success: false,
 
       message:
+        error?.message ||
         "Unable to retrieve receipt.",
 
     });
@@ -67,6 +183,14 @@ async function getReceipt(req, res) {
 }
 
 
+/*
+=========================================================
+EXPORT
+=========================================================
+*/
+
 module.exports = {
+
   getReceipt,
+
 };

@@ -440,6 +440,15 @@ CANCEL ORDER
 POST
 
 /api/orders/:orderId/cancel
+
+Authenticated user:
+
+req.user.uid
+
+The user can only cancel an order they are
+authorized to cancel.
+
+Reason is optional.
 =========================================================
 */
 
@@ -458,7 +467,7 @@ async function cancelOrderController(req, res) {
                 success: false,
 
                 message:
-                    "Authenticated user not found."
+                    "Authenticated user not found.",
 
             });
 
@@ -466,7 +475,7 @@ async function cancelOrderController(req, res) {
 
 
         const {
-            orderId
+            orderId,
         } = req.params;
 
 
@@ -477,16 +486,26 @@ async function cancelOrderController(req, res) {
                 success: false,
 
                 message:
-                    "Order ID is required."
+                    "Order ID is required.",
 
             });
 
         }
 
 
-        const {
-            reason
-        } = req.body;
+        /*
+        * req.body may be undefined when
+        * the frontend sends no body.
+        */
+
+        const body =
+            req.body || {};
+
+
+        const reason =
+            typeof body.reason === "string"
+                ? body.reason.trim()
+                : "";
 
 
         const result =
@@ -518,7 +537,9 @@ async function cancelOrderController(req, res) {
         );
 
 
-        return res.status(400).json({
+        return res.status(
+            error.statusCode || 400
+        ).json({
 
             success: false,
 
