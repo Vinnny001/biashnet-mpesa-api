@@ -630,6 +630,9 @@ async function createCheckout({
     buyerPhone,
 
     deliveryAddress = null,
+     pickupStation = null,
+    pickupStationId = null,
+    doorDelivery = false,
 
     idempotencyKey = null,
 
@@ -1661,6 +1664,10 @@ const sellerIds =
         IDEMPOTENCY
         -----------------------------------------------
         */
+
+        pickupStation,
+pickupStationId,
+doorDelivery: doorDelivery === true,
 
         checkoutIdempotencyKey:
             cleanIdempotencyKey,

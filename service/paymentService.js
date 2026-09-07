@@ -12,11 +12,15 @@ const {
   ORDER_STATUS,
   SELLER_PAYMENT_STATUS,
   PAYOUT_STATUS,
+  TRANSACTION_TYPES,
 } = require("../config/paymentConstants");
 
-const {
-  calculateCommission,
-} = require("./commissionService");
+const transactionService =
+  require("./transactionService");
+
+
+  const walletService =
+    require("./wallet");
 
 
 /*
@@ -24,37 +28,97 @@ const {
 BIASHNET PAYMENT SERVICE
 =========================================================
 
-CENTRAL MARKETPLACE PAYMENT LOGIC
+RESPONSIBILITY
 
-Handles:
+This service controls the transition:
 
-- Payment creation
-- Payment retrieval
-- M-PESA request attachment
-- Amount validation
-- Payment success
-- Payment failure
-- Marketplace payment processing
-- Order payment update
-- Stock deduction
-- Seller funds holding
-- Duplicate callback protection
+M-PESA SUCCESS
+      ↓
+PAYMENT COMPLETED
+      ↓
+ORDER PAID
+      ↓
+STOCK DEDUCTED
+      ↓
+SELLER FUNDS HELD
+      ↓
+SELLER PENDING BALANCE CREDITED
+      ↓
+LEDGER RECORDED
 
-Does NOT:
+IMPORTANT
 
-- Call Safaricom
-- Send STK Push
-- Handle HTTP requests
+Seller funds are NOT available for withdrawal here.
 
-Those belong to:
+They remain in:
 
-darajaService
-paymentInitiationService
-paymentCallbackService
-paymentController
+seller wallet.pendingBalance
+
+until:
+
+ORDER COMPLETED
+      ↓
+settlementService
+      ↓
+pendingBalance → availableBalance
 
 =========================================================
 */
+
+
+/*
+=========================================================
+MONEY
+=========================================================
+*/
+
+function money(value) {
+
+  const number =
+    Number(value);
+
+  if (
+    !Number.isFinite(number)
+  ) {
+
+    return 0;
+
+  }
+
+  return Number(
+    number.toFixed(2)
+  );
+
+}
+
+
+/*
+=========================================================
+SELLER WALLET
+=========================================================
+*/
+
+function getSellerWalletRef(
+  sellerId
+) {
+
+  if (!sellerId) {
+
+    throw new Error(
+      "Seller ID is required for wallet."
+    );
+
+  }
+
+  return db
+    .collection(
+      COLLECTIONS.WALLETS
+    )
+    .doc(
+      sellerId
+    );
+
+}
 
 
 /*
@@ -64,66 +128,92 @@ CREATE PAYMENT
 */
 
 async function createPayment({
+
   paymentId,
+
   orderId,
+
   buyerId,
+
   amount,
+
   phoneNumber,
+
   paymentMethod = "MPESA",
+
 }) {
 
   if (!paymentId) {
-    throw new Error("Payment ID is required.");
+
+    throw new Error(
+      "Payment ID is required."
+    );
+
   }
 
   if (!orderId) {
-    throw new Error("Order ID is required.");
+
+    throw new Error(
+      "Order ID is required."
+    );
+
   }
 
   if (!buyerId) {
-    throw new Error("Buyer ID is required.");
+
+    throw new Error(
+      "Buyer ID is required."
+    );
+
   }
 
-  const numericAmount = Number(amount);
+  const numericAmount =
+    Number(amount);
 
   if (
-    !Number.isFinite(numericAmount) ||
+    !Number.isFinite(
+      numericAmount
+    ) ||
     numericAmount <= 0
   ) {
-    throw new Error("Invalid payment amount.");
+
+    throw new Error(
+      "Invalid payment amount."
+    );
+
   }
 
-  const paymentRef = db
-    .collection(COLLECTIONS.PAYMENTS)
-    .doc(paymentId);
+  const paymentRef =
+    db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .doc(
+        paymentId
+      );
 
-  const existing = await paymentRef.get();
+  const existing =
+    await paymentRef.get();
 
-  /*
-  -------------------------------------------------------
-  EXISTING PAYMENT
-  -------------------------------------------------------
-  */
-
-  if (existing.exists) {
+  if (
+    existing.exists
+  ) {
 
     return {
-      created: false,
+
+      created:
+        false,
+
       paymentId,
+
       ...existing.data(),
+
     };
 
   }
 
   const now =
     FieldValue.serverTimestamp();
-
-
-  /*
-  -------------------------------------------------------
-  CREATE PAYMENT DOCUMENT
-  -------------------------------------------------------
-  */
 
   await paymentRef.set({
 
@@ -134,14 +224,17 @@ async function createPayment({
     buyerId,
 
     amount:
-      numericAmount,
+      money(
+        numericAmount
+      ),
 
     currency:
       "KES",
 
     paymentMethod:
-      String(paymentMethod)
-        .toUpperCase(),
+      String(
+        paymentMethod
+      ).toUpperCase(),
 
     provider:
       "MPESA",
@@ -151,10 +244,6 @@ async function createPayment({
 
     status:
       PAYMENT_STATUS.PENDING,
-
-    /*
-    M-PESA provider information
-    */
 
     providerTransactionId:
       null,
@@ -182,10 +271,10 @@ async function createPayment({
 
   });
 
-
   return {
 
-    created: true,
+    created:
+      true,
 
     paymentId,
 
@@ -200,24 +289,35 @@ GET PAYMENT
 =========================================================
 */
 
-async function getPayment(paymentId) {
+async function getPayment(
+  paymentId
+) {
 
   if (!paymentId) {
+
     throw new Error(
       "Payment ID is required."
     );
+
   }
 
-  const snap = await db
-    .collection(COLLECTIONS.PAYMENTS)
-    .doc(paymentId)
-    .get();
+  const snap =
+    await db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .doc(
+        paymentId
+      )
+      .get();
 
+  if (
+    !snap.exists
+  ) {
 
-  if (!snap.exists) {
     return null;
-  }
 
+  }
 
   return {
 
@@ -233,21 +333,7 @@ async function getPayment(paymentId) {
 
 /*
 =========================================================
-GET PAYMENT BY CHECKOUT REQUEST ID
-=========================================================
-
-IMPORTANT:
-
-Firestore field:
-
-checkoutRequestID
-
-This must match:
-
-paymentInitiationService
-paymentCallbackService
-paymentService
-
+GET PAYMENT BY CHECKOUT REQUEST
 =========================================================
 */
 
@@ -263,33 +349,36 @@ async function getPaymentByCheckoutRequestID(
 
   }
 
+  const snapshot =
+    await db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .where(
+        "checkoutRequestID",
+        "==",
+        checkoutRequestID
+      )
+      .limit(1)
+      .get();
 
-  const snapshot = await db
-    .collection(COLLECTIONS.PAYMENTS)
-    .where(
-      "checkoutRequestID",
-      "==",
-      checkoutRequestID
-    )
-    .limit(1)
-    .get();
+  if (
+    snapshot.empty
+  ) {
 
-
-  if (snapshot.empty) {
     return null;
+
   }
 
-
-  const doc =
+  const paymentDoc =
     snapshot.docs[0];
-
 
   return {
 
     paymentId:
-      doc.id,
+      paymentDoc.id,
 
-    ...doc.data(),
+    ...paymentDoc.data(),
 
   };
 
@@ -299,13 +388,6 @@ async function getPaymentByCheckoutRequestID(
 /*
 =========================================================
 ATTACH M-PESA REQUEST
-=========================================================
-
-Called after Daraja returns:
-
-MerchantRequestID
-CheckoutRequestID
-
 =========================================================
 */
 
@@ -327,7 +409,6 @@ async function attachMpesaRequest({
 
   }
 
-
   if (!checkoutRequestID) {
 
     throw new Error(
@@ -336,18 +417,22 @@ async function attachMpesaRequest({
 
   }
 
-
-  const paymentRef = db
-    .collection(COLLECTIONS.PAYMENTS)
-    .doc(paymentId);
-
+  const paymentRef =
+    db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .doc(
+        paymentId
+      );
 
   await paymentRef.update({
 
     checkoutRequestID,
 
     merchantRequestID:
-      merchantRequestID || null,
+      merchantRequestID ||
+      null,
 
     status:
       PAYMENT_STATUS.PENDING,
@@ -357,8 +442,9 @@ async function attachMpesaRequest({
 
   });
 
-
-  return getPayment(paymentId);
+  return getPayment(
+    paymentId
+  );
 
 }
 
@@ -378,11 +464,14 @@ function validatePaymentAmount({
 }) {
 
   const expected =
-    Number(expectedAmount);
+    Number(
+      expectedAmount
+    );
 
   const received =
-    Number(receivedAmount);
-
+    Number(
+      receivedAmount
+    );
 
   if (
     !Number.isFinite(expected) ||
@@ -395,23 +484,135 @@ function validatePaymentAmount({
 
   }
 
-
   if (
     Math.abs(
-      expected - received
+      expected -
+      received
     ) > 0.01
   ) {
 
     throw new Error(
-      `Payment amount mismatch. ` +
-      `Expected KES ${expected}, ` +
-      `received KES ${received}.`
+      `Payment amount mismatch. Expected KES ${expected}, received KES ${received}.`
     );
 
   }
 
-
   return true;
+
+}
+
+
+/*
+=========================================================
+NORMALIZE SELLER BREAKDOWN
+=========================================================
+*/
+
+function normalizeSellerBreakdown(
+  order
+) {
+
+  if (
+    !Array.isArray(
+      order.sellerBreakdown
+    ) ||
+    !order.sellerBreakdown.length
+  ) {
+
+    throw new Error(
+      "Order has no seller breakdown."
+    );
+
+  }
+
+  return order.sellerBreakdown.map(
+    seller => {
+
+      if (!seller?.sellerId) {
+
+        throw new Error(
+          "Seller breakdown contains no seller ID."
+        );
+
+      }
+
+      const gross =
+        money(
+          seller.grossAmount ??
+          seller.sellerGross ??
+          0
+        );
+
+      const commission =
+        money(
+          seller.commissionAmount ??
+          0
+        );
+
+      const net =
+        money(
+          seller.sellerNet ??
+          (gross - commission)
+        );
+
+      if (
+        gross < 0 ||
+        commission < 0 ||
+        net < 0
+      ) {
+
+        throw new Error(
+          `Invalid seller financial values for ${seller.sellerId}.`
+        );
+
+      }
+
+      const calculated =
+        money(
+          gross - commission
+        );
+
+      if (
+        calculated !== net
+      ) {
+
+        throw new Error(
+          `Seller financial mismatch for ${seller.sellerId}.`
+        );
+
+      }
+
+      return {
+
+        ...seller,
+
+        sellerId:
+          String(
+            seller.sellerId
+          ),
+
+        grossAmount:
+          gross,
+
+        commissionAmount:
+          commission,
+
+        sellerNet:
+          net,
+
+        sellerPaymentStatus:
+          SELLER_PAYMENT_STATUS.HELD,
+
+        payoutStatus:
+          PAYOUT_STATUS.NOT_RELEASED,
+
+        settlementStatus:
+          "PENDING_COMPLETION",
+
+      };
+
+    }
+  );
 
 }
 
@@ -421,27 +622,21 @@ function validatePaymentAmount({
 PROCESS MARKETPLACE PAYMENT
 =========================================================
 
-MAIN SUCCESSFUL PAYMENT PROCESSOR.
+THIS IS THE CORE PAYMENT SUCCESS TRANSACTION.
 
-Called after Safaricom confirms:
-
-ResultCode === 0
-
-It:
-
-1. Reads order
-2. Reads payment
-3. Prevents duplicate processing
-4. Validates buyer
-5. Validates amount
-6. Reads products
-7. Validates stock
-8. Deducts stock
-9. Completes payment
-10. Marks order PAID
-11. Holds seller funds
-12. Prevents duplicate callbacks
-
+M-PESA SUCCESS
+      ↓
+validate
+      ↓
+payment COMPLETED
+      ↓
+order PAID
+      ↓
+stock deducted
+      ↓
+seller pending credited
+      ↓
+financial ledger written
 =========================================================
 */
 
@@ -453,9 +648,11 @@ async function processMarketplacePayment({
 
   amount,
 
-  paymentMethod = "MPESA",
+  paymentMethod =
+    "MPESA",
 
-  providerResponse = null,
+  providerResponse =
+    null,
 
 }) {
 
@@ -467,7 +664,6 @@ async function processMarketplacePayment({
 
   }
 
-
   if (!providerTransactionId) {
 
     throw new Error(
@@ -476,22 +672,23 @@ async function processMarketplacePayment({
 
   }
 
+  const orderRef =
+    db
+      .collection(
+        COLLECTIONS.ORDERS
+      )
+      .doc(
+        orderId
+      );
 
-  const orderRef = db
-    .collection(COLLECTIONS.ORDERS)
-    .doc(orderId);
-
-
-  let processedResult;
-
+  let result;
 
   await db.runTransaction(
     async transaction => {
 
-
       /*
       ===================================================
-      1. READ ORDER
+      READ ORDER
       ===================================================
       */
 
@@ -500,8 +697,9 @@ async function processMarketplacePayment({
           orderRef
         );
 
-
-      if (!orderSnap.exists) {
+      if (
+        !orderSnap.exists
+      ) {
 
         throw new Error(
           "Marketplace order not found."
@@ -509,14 +707,13 @@ async function processMarketplacePayment({
 
       }
 
-
       const order =
         orderSnap.data();
 
 
       /*
       ===================================================
-      2. GET PAYMENT ID FROM ORDER
+      ORDER PAYMENT
       ===================================================
       */
 
@@ -529,22 +726,30 @@ async function processMarketplacePayment({
       }
 
 
-      const paymentRef = db
-        .collection(
-          COLLECTIONS.PAYMENTS
-        )
-        .doc(
-          order.paymentId
-        );
+      const paymentRef =
+        db
+          .collection(
+            COLLECTIONS.PAYMENTS
+          )
+          .doc(
+            order.paymentId
+          );
 
+
+      /*
+      ===================================================
+      READ PAYMENT
+      ===================================================
+      */
 
       const paymentSnap =
         await transaction.get(
           paymentRef
         );
 
-
-      if (!paymentSnap.exists) {
+      if (
+        !paymentSnap.exists
+      ) {
 
         throw new Error(
           "Marketplace payment not found."
@@ -552,14 +757,13 @@ async function processMarketplacePayment({
 
       }
 
-
       const payment =
         paymentSnap.data();
 
 
       /*
       ===================================================
-      3. DUPLICATE PROTECTION
+      DUPLICATE CALLBACK PROTECTION
       ===================================================
       */
 
@@ -568,15 +772,18 @@ async function processMarketplacePayment({
         PAYMENT_STATUS.COMPLETED
       ) {
 
-        processedResult = {
+        result = {
+
+          success:
+            true,
 
           alreadyProcessed:
             true,
 
+          orderId,
+
           paymentId:
             payment.paymentId,
-
-          orderId,
 
           amount:
             payment.amount,
@@ -584,8 +791,10 @@ async function processMarketplacePayment({
           providerTransactionId:
             payment.providerTransactionId,
 
-        };
+          status:
+            PAYMENT_STATUS.COMPLETED,
 
+        };
 
         return;
 
@@ -594,7 +803,7 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      4. BUYER / ORDER VALIDATION
+      PAYMENT OWNERSHIP
       ===================================================
       */
 
@@ -624,7 +833,7 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      5. AMOUNT VALIDATION
+      AMOUNT
       ===================================================
       */
 
@@ -641,13 +850,14 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      6. PAYMENT METHOD
+      PAYMENT METHOD
       ===================================================
       */
 
       if (
-        String(paymentMethod)
-          .toUpperCase() !==
+        String(
+          paymentMethod
+        ).toUpperCase() !==
         "MPESA"
       ) {
 
@@ -660,37 +870,160 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      7. READ PRODUCTS
-      ===================================================
-
-      ALL READS BEFORE WRITES.
-
+      SELLER BREAKDOWN
       ===================================================
       */
 
-      const productReads = [];
+      const sellerBreakdown =
+        normalizeSellerBreakdown(
+          order
+        );
+
+
+      /*
+      ===================================================
+      ORDER FINANCIALS
+      ===================================================
+      */
+
+      const buyerTotal =
+        money(
+          order.buyerTotal
+        );
+
+      const sellerGrossTotal =
+        money(
+          sellerBreakdown.reduce(
+            (
+              total,
+              seller
+            ) =>
+              total +
+              seller.grossAmount,
+            0
+          )
+        );
+
+      const commissionTotal =
+        money(
+          sellerBreakdown.reduce(
+            (
+              total,
+              seller
+            ) =>
+              total +
+              seller.commissionAmount,
+            0
+          )
+        );
+
+      const sellerNetTotal =
+        money(
+          sellerBreakdown.reduce(
+            (
+              total,
+              seller
+            ) =>
+              total +
+              seller.sellerNet,
+            0
+          )
+        );
+
+      const deliveryFee =
+        money(
+          order.deliveryFee
+        );
+
+
+      /*
+      Buyer total must equal:
+      
+      seller gross + delivery
+      */
+
+      const calculatedBuyerTotal =
+        money(
+          sellerGrossTotal +
+          deliveryFee
+        );
+
+
+      if (
+        calculatedBuyerTotal !==
+        buyerTotal
+      ) {
+
+        throw new Error(
+          `Order financial mismatch. Buyer total ${buyerTotal}, calculated ${calculatedBuyerTotal}.`
+        );
+
+      }
+
+
+      /*
+      Seller gross must equal:
+      
+      seller net + commission
+      */
+
+      if (
+        money(
+          sellerNetTotal +
+          commissionTotal
+        ) !==
+        sellerGrossTotal
+      ) {
+
+        throw new Error(
+          "Seller financial breakdown does not balance."
+        );
+
+      }
+
+
+      /*
+      ===================================================
+      READ PRODUCTS
+      ===================================================
+      */
+
+      const productReads =
+        [];
 
 
       for (
-        const item of order.items || []
+        const item
+        of order.items || []
       ) {
 
-        const productRef = db
-          .collection(
-            COLLECTIONS.PRODUCTS
-          )
-          .doc(
-            item.listingId
+        if (
+          !item?.listingId
+        ) {
+
+          throw new Error(
+            "Order item has no listingId."
           );
 
+        }
 
-        const productSnap =
+        const productRef =
+          db
+            .collection(
+              COLLECTIONS.PRODUCTS
+            )
+            .doc(
+              item.listingId
+            );
+
+        const snapshot =
           await transaction.get(
             productRef
           );
 
-
-        if (!productSnap.exists) {
+        if (
+          !snapshot.exists
+        ) {
 
           throw new Error(
             `Product ${item.listingId} no longer exists.`
@@ -698,14 +1031,12 @@ async function processMarketplacePayment({
 
         }
 
-
         productReads.push({
 
           ref:
             productRef,
 
-          snap:
-            productSnap,
+          snapshot,
 
           item,
 
@@ -716,27 +1047,27 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      8. VALIDATE STOCK
+      STOCK VALIDATION
       ===================================================
       */
 
       for (
-        const product of productReads
+        const product
+        of productReads
       ) {
 
         const data =
-          product.snap.data();
-
+          product.snapshot.data();
 
         const stock =
-          Number(data.stock);
-
+          Number(
+            data.stock
+          );
 
         const quantity =
           Number(
             product.item.quantity
           );
-
 
         if (
           !Number.isInteger(stock) ||
@@ -749,7 +1080,6 @@ async function processMarketplacePayment({
 
         }
 
-
         if (
           !Number.isInteger(quantity) ||
           quantity <= 0
@@ -760,7 +1090,6 @@ async function processMarketplacePayment({
           );
 
         }
-
 
         if (
           stock < quantity
@@ -777,23 +1106,22 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      9. DEDUCT STOCK
+      DEDUCT STOCK
       ===================================================
       */
 
       for (
-        const product of productReads
+        const product
+        of productReads
       ) {
 
         const data =
-          product.snap.data();
-
+          product.snapshot.data();
 
         const quantity =
           Number(
             product.item.quantity
           );
-
 
         transaction.update(
 
@@ -817,31 +1145,304 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      10. HOLD SELLER FUNDS
+      CREDIT SELLER PENDING BALANCE
+      ===================================================
+
+      IMPORTANT:
+
+      availableBalance DOES NOT increase.
+
+      */
+
+      for (
+    const walletData
+    of walletReads
+) {
+
+    const seller =
+        walletData.seller;
+
+    const operation =
+        walletService.holdSellerFundsInTransaction({
+
+            transaction,
+
+            sellerId:
+                seller.sellerId,
+
+            amount:
+                seller.sellerNet,
+
+            orderId,
+
+            paymentId:
+                payment.paymentId,
+
+        });
+
+    await operation.read();
+
+}
+
+      /*
+      ===================================================
+      PAYMENT LEDGER
       ===================================================
       */
 
-      const sellerBreakdown =
+      if (
+        !marketplaceLedgerSnap.exists
+      ) {
 
-        (order.sellerBreakdown || [])
-          .map(
-            seller => ({
+        transaction.create(
 
-              ...seller,
+          marketplaceLedgerRef,
 
-              sellerPaymentStatus:
-                SELLER_PAYMENT_STATUS.HELD,
+          {
 
-              payoutStatus:
-                PAYOUT_STATUS.NOT_RELEASED,
+            transactionId:
+              marketplaceLedgerRef.id,
 
-            })
-          );
+            type:
+              TRANSACTION_TYPES.PAYMENT,
+
+            orderId,
+
+            paymentId:
+              payment.paymentId,
+
+            buyerId:
+              order.buyerId,
+
+            amount:
+              buyerTotal,
+
+            currency:
+              "KES",
+
+            status:
+              PAYMENT_STATUS.COMPLETED,
+
+            direction:
+              "CREDIT",
+
+            source:
+              "MPESA_MARKETPLACE",
+
+            provider:
+              "MPESA",
+
+            providerTransactionId,
+
+            description:
+              `Marketplace payment received for order ${orderId}`,
+
+            createdAt:
+              FieldValue.serverTimestamp(),
+
+            completedAt:
+              FieldValue.serverTimestamp(),
+
+          }
+
+        );
+
+      }
 
 
       /*
       ===================================================
-      11. COMPLETE PAYMENT
+      SELLER HOLD LEDGERS
+      ===================================================
+      */
+
+      for (
+        const holder
+        of sellerHoldRefs
+      ) {
+
+        if (
+          holder.snapshot.exists
+        ) {
+
+          continue;
+
+        }
+
+        const seller =
+          holder.seller;
+
+
+        transaction.create(
+
+          holder.ref,
+
+          {
+
+            transactionId:
+              holder.ref.id,
+
+            type:
+              TRANSACTION_TYPES.SELLER_HOLD,
+
+            orderId,
+
+            paymentId:
+              payment.paymentId,
+
+            sellerId:
+              seller.sellerId,
+
+            buyerId:
+              order.buyerId,
+
+            amount:
+              seller.sellerNet,
+
+            saleAmount:
+              seller.grossAmount,
+
+            commissionAmount:
+              seller.commissionAmount,
+
+            sellerGross:
+              seller.grossAmount,
+
+            sellerNet:
+              seller.sellerNet,
+
+            currency:
+              "KES",
+
+            status:
+              PAYMENT_STATUS.COMPLETED,
+
+            direction:
+              "CREDIT",
+
+            balanceType:
+              "PENDING",
+
+            source:
+              "MARKETPLACE_ORDER",
+
+            description:
+              `Seller funds held for order ${orderId}`,
+
+            createdAt:
+              FieldValue.serverTimestamp(),
+
+          }
+
+        );
+
+      }
+
+
+      /*
+      ===================================================
+      COMMISSION LEDGER
+      ===================================================
+
+      One commission ledger per SELLER.
+
+      */
+
+      for (
+        const seller
+        of sellerBreakdown
+      ) {
+
+        if (
+          seller.commissionAmount <= 0
+        ) {
+
+          continue;
+
+        }
+
+        const commissionRef =
+          db
+            .collection(
+              COLLECTIONS.TRANSACTIONS
+            )
+            .doc(
+              `COMMISSION_${orderId}_${seller.sellerId}`
+            );
+
+
+        const commissionSnap =
+          await transaction.get(
+            commissionRef
+          );
+
+
+        if (
+          !commissionSnap.exists
+        ) {
+
+          transaction.create(
+
+            commissionRef,
+
+            {
+
+              transactionId:
+                commissionRef.id,
+
+              type:
+                TRANSACTION_TYPES.COMMISSION_ACCRUAL,
+
+              orderId,
+
+              paymentId:
+                payment.paymentId,
+
+              sellerId:
+                seller.sellerId,
+
+              buyerId:
+                order.buyerId,
+
+              amount:
+                seller.commissionAmount,
+
+              currency:
+                "KES",
+
+              status:
+                PAYMENT_STATUS.COMPLETED,
+
+              direction:
+                "CREDIT",
+
+              recipient:
+                "BIASHNET",
+
+              wallet:
+                "COMPANY_WALLET",
+
+              source:
+                "MARKETPLACE_ORDER",
+
+              description:
+                `BIASHNET commission for seller ${seller.sellerId} on order ${orderId}`,
+
+              createdAt:
+                FieldValue.serverTimestamp(),
+
+            }
+
+          );
+
+        }
+
+      }
+
+
+      /*
+      ===================================================
+      COMPLETE PAYMENT
       ===================================================
       */
 
@@ -881,7 +1482,7 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      12. UPDATE ORDER
+      UPDATE ORDER
       ===================================================
       */
 
@@ -908,6 +1509,9 @@ async function processMarketplacePayment({
           fundsHeld:
             true,
 
+          fundsReleased:
+            false,
+
           sellerPaymentStatus:
             SELLER_PAYMENT_STATUS.HELD,
 
@@ -922,6 +1526,9 @@ async function processMarketplacePayment({
           paymentCompletedAt:
             now,
 
+          settlementStatus:
+            "PENDING_COMPLETION",
+
           updatedAt:
             now,
 
@@ -932,11 +1539,11 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      13. RETURN RESULT
+      RESULT
       ===================================================
       */
 
-      processedResult = {
+      result = {
 
         success:
           true,
@@ -944,10 +1551,10 @@ async function processMarketplacePayment({
         alreadyProcessed:
           false,
 
+        orderId,
+
         paymentId:
           payment.paymentId,
-
-        orderId,
 
         amount:
           payment.amount,
@@ -957,13 +1564,45 @@ async function processMarketplacePayment({
         status:
           PAYMENT_STATUS.COMPLETED,
 
+        orderStatus:
+          ORDER_STATUS.PAID,
+
+        sellerFundsStatus:
+          SELLER_PAYMENT_STATUS.HELD,
+
+        settlementStatus:
+          "PENDING_COMPLETION",
+
+        totalSellerNet:
+          sellerNetTotal,
+
+        totalCommission:
+          commissionTotal,
+
       };
 
     }
   );
 
 
-  return processedResult;
+  console.log(
+    "=========================================="
+  );
+
+  console.log(
+    "✅ BIASHNET MARKETPLACE PAYMENT PROCESSED"
+  );
+
+  console.log(
+    result
+  );
+
+  console.log(
+    "=========================================="
+  );
+
+
+  return result;
 
 }
 
@@ -971,14 +1610,6 @@ async function processMarketplacePayment({
 /*
 =========================================================
 MARK PAYMENT SUCCESSFUL
-=========================================================
-
-Compatibility wrapper.
-
-Prefer:
-
-processMarketplacePayment()
-
 =========================================================
 */
 
@@ -998,12 +1629,10 @@ async function markPaymentSuccessful({
 
 }) {
 
-
   const payment =
     await getPayment(
       paymentId
     );
-
 
   if (!payment) {
 
@@ -1012,7 +1641,6 @@ async function markPaymentSuccessful({
     );
 
   }
-
 
   return processMarketplacePayment({
 
@@ -1069,21 +1697,21 @@ async function markPaymentFailed({
 
   }
 
-
-  const paymentRef = db
-    .collection(
-      COLLECTIONS.PAYMENTS
-    )
-    .doc(
-      paymentId
-    );
-
+  const paymentRef =
+    db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .doc(
+        paymentId
+      );
 
   const paymentSnap =
     await paymentRef.get();
 
-
-  if (!paymentSnap.exists) {
+  if (
+    !paymentSnap.exists
+  ) {
 
     throw new Error(
       "Payment not found."
@@ -1091,16 +1719,9 @@ async function markPaymentFailed({
 
   }
 
-
   const payment =
     paymentSnap.data();
 
-
-  /*
-  =======================================================
-  ALREADY COMPLETED
-  =======================================================
-  */
 
   if (
     payment.status ===
@@ -1108,6 +1729,9 @@ async function markPaymentFailed({
   ) {
 
     return {
+
+      success:
+        true,
 
       alreadyCompleted:
         true,
@@ -1122,12 +1746,6 @@ async function markPaymentFailed({
   const now =
     FieldValue.serverTimestamp();
 
-
-  /*
-  =======================================================
-  UPDATE PAYMENT AS FAILED
-  =======================================================
-  */
 
   await paymentRef.update({
 
@@ -1149,28 +1767,25 @@ async function markPaymentFailed({
   });
 
 
-  /*
-  =======================================================
-  UPDATE ORDER
-  =======================================================
-  */
+  if (
+    payment.orderId
+  ) {
 
-  if (payment.orderId) {
-
-    const orderRef = db
-      .collection(
-        COLLECTIONS.ORDERS
-      )
-      .doc(
-        payment.orderId
-      );
-
+    const orderRef =
+      db
+        .collection(
+          COLLECTIONS.ORDERS
+        )
+        .doc(
+          payment.orderId
+        );
 
     const orderSnap =
       await orderRef.get();
 
-
-    if (orderSnap.exists) {
+    if (
+      orderSnap.exists
+    ) {
 
       const order =
         orderSnap.data();
@@ -1188,6 +1803,15 @@ async function markPaymentFailed({
 
           status:
             ORDER_STATUS.PENDING_PAYMENT,
+
+          fundsReceived:
+            false,
+
+          fundsHeld:
+            false,
+
+          fundsReleased:
+            false,
 
           updatedAt:
             now,
@@ -1232,6 +1856,12 @@ async function calculatePaymentBreakdown({
   category,
 
 }) {
+
+  const {
+    calculateCommission,
+  } =
+    require("./commissionService");
+
 
   return calculateCommission({
 

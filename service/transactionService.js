@@ -1,22 +1,21 @@
-const { db } =
-    require("../config/firebase");
+const {
+    db,
+} = require("../config/firebase");
 
 const {
-    COLLECTIONS
+    COLLECTIONS,
 } = require("../config/collections");
 
 const {
     TRANSACTION_TYPES,
     PAYMENT_STATUS,
     PAYMENT_METHODS,
-    PAYMENT_PROVIDERS
-} =
-    require("../config/paymentConstants");
+    PAYMENT_PROVIDERS,
+} = require("../config/paymentConstants");
 
 const {
-    generateTransactionId
-} =
-    require("../utils/codeGenerator");
+    generateTransactionId,
+} = require("../utils/codeGenerator");
 
 
 /*
@@ -27,57 +26,52 @@ BIASHNET TRANSACTION SERVICE
 PURPOSE
 ---------------------------------------------------------
 
-This service creates and manages the permanent financial
-ledger for BIASHNET marketplace payments.
+Permanent financial ledger for BIASHNET.
 
-IMPORTANT:
+This service:
 
-This service does NOT:
+- validates financial events
+- creates immutable ledger records
+- supports normal writes
+- supports Firestore transactions
+- provides deterministic transaction IDs
+- prevents duplicate ledger entries
+- provides seller/buyer/payment/order queries
 
-- initiate M-PESA
-- send STK Push
-- handle Firebase authentication
-- release seller funds
-- withdraw money
-- generate orders
-- complete orders
+IMPORTANT
 
-It records financial events.
+There are TWO write modes:
 
-MAIN FLOW:
+1. createTransaction()
+   Normal standalone ledger write.
 
-M-PESA SUCCESS
-      ↓
+2. createTransactionInTransaction()
+   Used INSIDE an existing Firestore transaction.
+
+The second method is critical for:
+
 paymentService
-      ↓
-transactionService
-      ↓
-financial ledger
-      ↓
 settlementService
+refundService
+withdrawalService
 
+because wallet + order + ledger must commit atomically.
 
-COLLECTION:
-
-marketplaceTransactions
 =========================================================
 */
 
 
-/*
-=========================================================
-MONEY HELPER
-=========================================================
-*/
+/* ========================================================
+   MONEY
+======================================================== */
 
 function toMoney(value) {
 
-    const number =
+    const amount =
         Number(value);
 
-
     if (
-        !Number.isFinite(number)
+        !Number.isFinite(amount)
     ) {
 
         throw new Error(
@@ -86,19 +80,16 @@ function toMoney(value) {
 
     }
 
-
     return Number(
-        number.toFixed(2)
+        amount.toFixed(2)
     );
 
 }
 
 
-/*
-=========================================================
-VALIDATE REQUIRED VALUE
-=========================================================
-*/
+/* ========================================================
+   REQUIRED VALUE
+======================================================== */
 
 function requireValue(
     value,
@@ -120,33 +111,260 @@ function requireValue(
 }
 
 
-/*
-=========================================================
-CREATE TRANSACTION
-=========================================================
+/* ========================================================
+   STRING
+======================================================== */
 
-Creates one permanent financial transaction.
+function normalizeString(
+    value,
+    fallback = null
+) {
 
-This function should normally be called after a payment
-has been successfully verified.
+    if (
+        value === undefined ||
+        value === null
+    ) {
 
-Example:
+        return fallback;
 
-KES 1,000 marketplace sale
+    }
 
-Creates:
+    const result =
+        String(value).trim();
 
-MARKETPLACE_SALE
-amount = 1000
-commission = 150
-sellerGross = 850
+    return result || fallback;
 
-=========================================================
-*/
+}
 
-async function createTransaction({
 
-    transactionId = null,
+/* ========================================================
+   ENUM
+======================================================== */
+
+function normalizeEnum(
+    value
+) {
+
+    return String(
+        value || ""
+    )
+        .trim()
+        .toUpperCase();
+
+}
+
+
+/* ========================================================
+   COMMISSION RATE
+======================================================== */
+
+function validateCommissionRate(
+    rate
+) {
+
+    const numericRate =
+        Number(rate);
+
+    if (
+        !Number.isFinite(
+            numericRate
+        ) ||
+        numericRate < 0 ||
+        numericRate > 1
+    ) {
+
+        throw new Error(
+            "Invalid commission rate."
+        );
+
+    }
+
+    return numericRate;
+
+}
+
+
+/* ========================================================
+   TYPE CHECKS
+======================================================== */
+
+function isType(
+    type,
+    expected
+) {
+
+    return (
+        normalizeEnum(type) ===
+        normalizeEnum(expected)
+    );
+
+}
+
+
+function isMarketplaceSale(
+    type
+) {
+
+    return isType(
+        type,
+        TRANSACTION_TYPES.MARKETPLACE_SALE
+    );
+
+}
+
+
+/* ========================================================
+   ORDER FINANCIAL VALIDATION
+======================================================== */
+
+function validateMarketplaceFinancials({
+
+    amount,
+
+    commissionAmount,
+
+    sellerGross,
+
+    sellerNet,
+
+}) {
+
+    const saleAmount =
+        toMoney(amount);
+
+    const commission =
+        toMoney(
+            commissionAmount
+        );
+
+    const gross =
+        toMoney(
+            sellerGross
+        );
+
+    const net =
+        toMoney(
+            sellerNet
+        );
+
+
+    if (
+        saleAmount <= 0
+    ) {
+
+        throw new Error(
+            "Transaction amount must be greater than zero."
+        );
+
+    }
+
+
+    if (
+        commission < 0
+    ) {
+
+        throw new Error(
+            "Commission cannot be negative."
+        );
+
+    }
+
+
+    if (
+        gross < 0
+    ) {
+
+        throw new Error(
+            "Seller gross cannot be negative."
+        );
+
+    }
+
+
+    if (
+        net < 0
+    ) {
+
+        throw new Error(
+            "Seller net cannot be negative."
+        );
+
+    }
+
+
+    if (
+        net > gross
+    ) {
+
+        throw new Error(
+            "Seller net cannot exceed seller gross."
+        );
+
+    }
+
+
+    /*
+    sale
+       =
+    seller gross
+       +
+    commission
+    */
+
+    if (
+        Math.abs(
+            toMoney(
+                gross +
+                commission
+            ) -
+            saleAmount
+        ) > 0.01
+    ) {
+
+        throw new Error(
+            "Marketplace transaction does not balance."
+        );
+
+    }
+
+
+    /*
+    seller net
+       =
+    seller gross
+       -
+    commission
+    */
+
+    if (
+        Math.abs(
+            toMoney(
+                gross -
+                commission
+            ) -
+            net
+        ) > 0.01
+    ) {
+
+        throw new Error(
+            "Seller net and commission are inconsistent."
+        );
+
+    }
+
+
+    return true;
+
+}
+
+
+/* ========================================================
+   BUILD LEDGER DATA
+======================================================== */
+
+function buildTransactionData({
+
+    transactionId,
 
     type,
 
@@ -154,11 +372,11 @@ async function createTransaction({
 
     paymentId,
 
-    buyerId,
+    buyerId = null,
 
-    sellerId,
+    sellerId = null,
 
-    listingId,
+    listingId = null,
 
     amount,
 
@@ -183,15 +401,19 @@ async function createTransaction({
     status =
         PAYMENT_STATUS.COMPLETED,
 
+    direction = "CREDIT",
+
+    source = "MARKETPLACE",
+
+    recipient = null,
+
+    wallet = null,
+
+    payoutStatus = null,
+
     metadata = {},
 
 }) {
-
-    /*
-    =====================================================
-    VALIDATION
-    =====================================================
-    */
 
     requireValue(
         type,
@@ -203,25 +425,68 @@ async function createTransaction({
         "Order ID"
     );
 
-    requireValue(
-        paymentId,
-        "Payment ID"
-    );
 
-    requireValue(
-        buyerId,
-        "Buyer ID"
-    );
+    const marketplaceTypes = [
 
+        TRANSACTION_TYPES.MARKETPLACE_SALE,
 
-    /*
-    sellerId may be unnecessary for some future
-    transaction types, but marketplace sales require it.
-    */
+        TRANSACTION_TYPES.COMMISSION,
+
+        TRANSACTION_TYPES.SELLER_PAYOUT,
+
+        TRANSACTION_TYPES.REFUND,
+
+        TRANSACTION_TYPES.PAYMENT,
+
+        TRANSACTION_TYPES.SELLER_HOLD,
+
+    ];
+
 
     if (
-        type ===
-        TRANSACTION_TYPES.MARKETPLACE_SALE
+        marketplaceTypes
+            .map(normalizeEnum)
+            .includes(
+                normalizeEnum(type)
+            )
+    ) {
+
+        requireValue(
+            paymentId,
+            "Payment ID"
+        );
+
+        requireValue(
+            buyerId,
+            "Buyer ID"
+        );
+
+    }
+
+
+    const sellerTypes = [
+
+        TRANSACTION_TYPES.MARKETPLACE_SALE,
+
+        TRANSACTION_TYPES.COMMISSION,
+
+        TRANSACTION_TYPES.SELLER_PAYOUT,
+
+        TRANSACTION_TYPES.SELLER_HOLD,
+
+        TRANSACTION_TYPES.WALLET_WITHDRAWAL,
+
+        TRANSACTION_TYPES.WITHDRAWAL,
+
+    ];
+
+
+    if (
+        sellerTypes
+            .map(normalizeEnum)
+            .includes(
+                normalizeEnum(type)
+            )
     ) {
 
         requireValue(
@@ -247,31 +512,10 @@ async function createTransaction({
     }
 
 
-    /*
-    =====================================================
-    FINANCIAL VALUES
-    =====================================================
-    */
-
     const normalizedCommissionRate =
-        Number(
+        validateCommissionRate(
             commissionRate
         );
-
-
-    if (
-        !Number.isFinite(
-            normalizedCommissionRate
-        ) ||
-        normalizedCommissionRate < 0 ||
-        normalizedCommissionRate > 1
-    ) {
-
-        throw new Error(
-            "Invalid commission rate."
-        );
-
-    }
 
 
     const normalizedCommission =
@@ -288,74 +532,160 @@ async function createTransaction({
 
     const normalizedSellerNet =
         toMoney(
-            sellerNet ||
-            normalizedSellerGross
+            sellerNet
         );
 
 
-    /*
-    =====================================================
-    FINANCIAL VALIDATION
-    =====================================================
-
-    Sale:
-
-    amount
-       =
-    commission
-       +
-    seller gross
-    =====================================================
-    */
-
     if (
-        type ===
-        TRANSACTION_TYPES.MARKETPLACE_SALE
+        isMarketplaceSale(
+            type
+        )
     ) {
 
-        const calculatedTotal =
-            toMoney(
-                normalizedCommission +
-                normalizedSellerGross
-            );
+        validateMarketplaceFinancials({
 
+            amount:
+                transactionAmount,
 
-        if (
-            Math.abs(
-                calculatedTotal -
-                transactionAmount
-            ) > 0.01
-        ) {
+            commissionAmount:
+                normalizedCommission,
 
-            throw new Error(
-                "Transaction financial values do not balance."
-            );
+            sellerGross:
+                normalizedSellerGross,
 
-        }
+            sellerNet:
+                normalizedSellerNet,
 
-
-        if (
-            normalizedSellerNet >
-            normalizedSellerGross
-        ) {
-
-            throw new Error(
-                "Seller net cannot exceed seller gross."
-            );
-
-        }
+        });
 
     }
 
 
-    /*
-    =====================================================
-    TRANSACTION ID
-    =====================================================
-    */
+    return {
+
+        transactionId,
+
+        type:
+            normalizeString(type),
+
+        orderId:
+            normalizeString(orderId),
+
+        paymentId:
+            normalizeString(paymentId),
+
+        buyerId:
+            normalizeString(buyerId),
+
+        sellerId:
+            normalizeString(sellerId),
+
+        listingId:
+            normalizeString(listingId),
+
+        amount:
+            transactionAmount,
+
+        currency:
+            normalizeString(
+                currency,
+                "KES"
+            ),
+
+        commissionRate:
+            normalizedCommissionRate,
+
+        commissionPercentage:
+            normalizedCommissionRate * 100,
+
+        commissionAmount:
+            normalizedCommission,
+
+        sellerGross:
+            normalizedSellerGross,
+
+        sellerNet:
+            normalizedSellerNet,
+
+        paymentMethod:
+            normalizeString(
+                paymentMethod
+            ),
+
+        provider:
+            normalizeString(
+                provider
+            ),
+
+        providerTransactionId:
+            normalizeString(
+                providerTransactionId
+            ),
+
+        status:
+            normalizeString(
+                status
+            ),
+
+        direction:
+            normalizeEnum(
+                direction
+            ) || "CREDIT",
+
+        source:
+            normalizeString(
+                source,
+                "MARKETPLACE"
+            ),
+
+        recipient:
+            normalizeString(
+                recipient
+            ),
+
+        wallet:
+            normalizeString(
+                wallet
+            ),
+
+        payoutStatus:
+            normalizeString(
+                payoutStatus
+            ),
+
+        metadata:
+            metadata &&
+            typeof metadata === "object"
+                ? metadata
+                : {},
+
+        createdAt:
+            new Date(),
+
+        updatedAt:
+            new Date(),
+
+    };
+
+}
+
+
+/* ========================================================
+   CREATE TRANSACTION
+========================================================
+
+Standalone write.
+
+Use this when no outer Firestore transaction exists.
+========================================================
+*/
+
+async function createTransaction(
+    options
+) {
 
     const finalTransactionId =
-        transactionId ||
+        options.transactionId ||
         generateTransactionId();
 
 
@@ -369,126 +699,70 @@ async function createTransaction({
             );
 
 
-    /*
-    =====================================================
-    DUPLICATE PROTECTION
-    =====================================================
-    */
-
-    const existingSnap =
+    const existing =
         await transactionRef.get();
 
 
     if (
-        existingSnap.exists
+        existing.exists
     ) {
 
         return {
 
-            success: true,
+            success:
+                true,
 
-            alreadyExists: true,
+            alreadyExists:
+                true,
 
             transactionId:
                 finalTransactionId,
 
-            transaction:
-                {
-                    id:
-                        existingSnap.id,
+            transaction: {
 
-                    ...existingSnap.data(),
+                id:
+                    existing.id,
 
-                },
+                ...existing.data(),
+
+            },
 
         };
 
     }
 
 
-    /*
-    =====================================================
-    CREATE LEDGER RECORD
-    =====================================================
-    */
+    const transactionData =
+        buildTransactionData({
 
-    const now =
-        new Date();
+            ...options,
 
+            transactionId:
+                finalTransactionId,
 
-    const transactionData = {
-
-        transactionId:
-            finalTransactionId,
-
-        type,
-
-        orderId,
-
-        paymentId,
-
-        buyerId,
-
-        sellerId:
-            sellerId || null,
-
-        listingId:
-            listingId || null,
-
-        amount:
-            transactionAmount,
-
-        currency,
-
-        commissionRate:
-            normalizedCommissionRate,
-
-        commissionAmount:
-            normalizedCommission,
-
-        sellerGross:
-            normalizedSellerGross,
-
-        sellerNet:
-            normalizedSellerNet,
-
-        paymentMethod,
-
-        provider,
-
-        providerTransactionId:
-            providerTransactionId ||
-            null,
-
-        status,
-
-        metadata,
-
-        createdAt:
-            now,
-
-        updatedAt:
-            now,
-
-    };
+        });
 
 
-    await transactionRef.set(
+    await transactionRef.create(
         transactionData
     );
 
 
     console.log(
-        "💰 Transaction created:",
-        finalTransactionId
+        "💰 TRANSACTION CREATED:",
+        finalTransactionId,
+        transactionData.type,
+        transactionData.amount
     );
 
 
     return {
 
-        success: true,
+        success:
+            true,
 
-        alreadyExists: false,
+        alreadyExists:
+            false,
 
         transactionId:
             finalTransactionId,
@@ -501,24 +775,193 @@ async function createTransaction({
 }
 
 
-/*
-=========================================================
-CREATE MARKETPLACE SALE TRANSACTION
-=========================================================
+/* ========================================================
+   CREATE TRANSACTION INSIDE FIRESTORE TRANSACTION
+========================================================
 
-Convenience function specifically for marketplace sales.
+CRITICAL METHOD.
 
-Expected:
+This method does NOT call:
 
-amount = buyer payment
+transactionRef.get()
+transactionRef.create()
+outside the transaction.
 
-commissionAmount = BIASHNET commission
+It uses the Firestore Transaction object provided
+by paymentService / settlementService.
 
-sellerGross = amount - commission
+========================================================
+*/
 
-sellerNet = amount seller eventually receives
+async function createTransactionInTransaction({
 
-=========================================================
+    transaction,
+
+    transactionId,
+
+    type,
+
+    orderId,
+
+    paymentId,
+
+    buyerId = null,
+
+    sellerId = null,
+
+    listingId = null,
+
+    amount,
+
+    currency = "KES",
+
+    commissionRate = 0,
+
+    commissionAmount = 0,
+
+    sellerGross = 0,
+
+    sellerNet = 0,
+
+    paymentMethod =
+        PAYMENT_METHODS.MPESA,
+
+    provider =
+        PAYMENT_PROVIDERS.MPESA,
+
+    providerTransactionId = null,
+
+    status =
+        PAYMENT_STATUS.COMPLETED,
+
+    direction = "CREDIT",
+
+    source = "MARKETPLACE",
+
+    recipient = null,
+
+    wallet = null,
+
+    payoutStatus = null,
+
+    metadata = {},
+
+}) {
+
+    if (
+        !transaction ||
+        typeof transaction.set !==
+        "function"
+    ) {
+
+        throw new Error(
+            "Firestore transaction object is required."
+        );
+
+    }
+
+
+    requireValue(
+        transactionId,
+        "Transaction ID"
+    );
+
+
+    const transactionRef =
+        db
+            .collection(
+                COLLECTIONS.TRANSACTIONS
+            )
+            .doc(
+                transactionId
+            );
+
+
+    const transactionData =
+        buildTransactionData({
+
+            transactionId,
+
+            type,
+
+            orderId,
+
+            paymentId,
+
+            buyerId,
+
+            sellerId,
+
+            listingId,
+
+            amount,
+
+            currency,
+
+            commissionRate,
+
+            commissionAmount,
+
+            sellerGross,
+
+            sellerNet,
+
+            paymentMethod,
+
+            provider,
+
+            providerTransactionId,
+
+            status,
+
+            direction,
+
+            source,
+
+            recipient,
+
+            wallet,
+
+            payoutStatus,
+
+            metadata,
+
+        });
+
+
+    /*
+    We use set with merge.
+
+    This allows callers to safely combine this
+    helper with a read they already performed.
+    */
+
+    transaction.set(
+        transactionRef,
+        transactionData,
+        {
+            merge: false,
+        }
+    );
+
+
+    return {
+
+        transactionId,
+
+        transactionRef,
+
+        transaction:
+            transactionData,
+
+    };
+
+}
+
+
+/* ========================================================
+   MARKETPLACE SALE
+========================================================
 */
 
 async function createMarketplaceSaleTransaction({
@@ -531,11 +974,11 @@ async function createMarketplaceSaleTransaction({
 
     sellerId,
 
-    listingId,
+    listingId = null,
 
     amount,
 
-    commissionRate,
+    commissionRate = 0,
 
     commissionAmount,
 
@@ -557,8 +1000,261 @@ async function createMarketplaceSaleTransaction({
 
     return createTransaction({
 
+        transactionId:
+            `SALE_${orderId}_${sellerId}`,
+
         type:
             TRANSACTION_TYPES.MARKETPLACE_SALE,
+
+        orderId,
+
+        paymentId,
+
+        buyerId,
+
+        sellerId,
+
+        listingId,
+
+        amount,
+
+        commissionRate,
+
+        commissionAmount,
+
+        sellerGross,
+
+        sellerNet,
+
+        currency:
+            "KES",
+
+        paymentMethod,
+
+        provider,
+
+        providerTransactionId,
+
+        status:
+            PAYMENT_STATUS.COMPLETED,
+
+        direction:
+            "CREDIT",
+
+        source:
+            "MARKETPLACE_ORDER",
+
+        metadata,
+
+    });
+
+}
+
+
+/* ========================================================
+   PAYMENT
+========================================================
+*/
+
+async function createPaymentTransaction({
+
+    orderId,
+
+    paymentId,
+
+    buyerId,
+
+    amount,
+
+    providerTransactionId = null,
+
+    paymentMethod =
+        PAYMENT_METHODS.MPESA,
+
+    provider =
+        PAYMENT_PROVIDERS.MPESA,
+
+    metadata = {},
+
+}) {
+
+    return createTransaction({
+
+        transactionId:
+            `PAYMENT_${paymentId}`,
+
+        type:
+            TRANSACTION_TYPES.PAYMENT,
+
+        orderId,
+
+        paymentId,
+
+        buyerId,
+
+        amount,
+
+        currency:
+            "KES",
+
+        commissionRate:
+            0,
+
+        commissionAmount:
+            0,
+
+        sellerGross:
+            0,
+
+        sellerNet:
+            0,
+
+        paymentMethod,
+
+        provider,
+
+        providerTransactionId,
+
+        status:
+            PAYMENT_STATUS.COMPLETED,
+
+        direction:
+            "CREDIT",
+
+        source:
+            "MPESA",
+
+        metadata,
+
+    });
+
+}
+
+
+/* ========================================================
+   SELLER HOLD
+========================================================
+*/
+
+async function createSellerHoldTransaction({
+
+    orderId,
+
+    paymentId,
+
+    buyerId,
+
+    sellerId,
+
+    listingId = null,
+
+    amount,
+
+    commissionAmount = 0,
+
+    sellerGross,
+
+    sellerNet,
+
+    providerTransactionId = null,
+
+    metadata = {},
+
+}) {
+
+    return createTransaction({
+
+        transactionId:
+            `HOLD_${orderId}_${sellerId}`,
+
+        type:
+            TRANSACTION_TYPES.SELLER_HOLD,
+
+        orderId,
+
+        paymentId,
+
+        buyerId,
+
+        sellerId,
+
+        listingId,
+
+        amount,
+
+        currency:
+            "KES",
+
+        commissionRate:
+            0,
+
+        commissionAmount,
+
+        sellerGross,
+
+        sellerNet,
+
+        paymentMethod:
+            PAYMENT_METHODS.WALLET,
+
+        provider:
+            "BIASHNET_ESCROW",
+
+        providerTransactionId,
+
+        status:
+            PAYMENT_STATUS.COMPLETED,
+
+        direction:
+            "CREDIT",
+
+        source:
+            "MARKETPLACE_HOLD",
+
+        wallet:
+            "SELLER_PENDING",
+
+        metadata,
+
+    });
+
+}
+
+
+/* ========================================================
+   COMMISSION
+========================================================
+*/
+
+async function createCommissionTransaction({
+
+    orderId,
+
+    paymentId,
+
+    buyerId,
+
+    sellerId,
+
+    listingId = null,
+
+    amount,
+
+    commissionRate = 0,
+
+    providerTransactionId = null,
+
+    metadata = {},
+
+}) {
+
+    return createTransaction({
+
+        transactionId:
+            `COMMISSION_${orderId}_${sellerId}`,
+
+        type:
+            TRANSACTION_TYPES.COMMISSION,
 
         orderId,
 
@@ -577,111 +1273,8 @@ async function createMarketplaceSaleTransaction({
 
         commissionRate,
 
-        commissionAmount,
-
-        sellerGross,
-
-        sellerNet,
-
-        paymentMethod,
-
-        provider,
-
-        providerTransactionId,
-
-        status:
-            PAYMENT_STATUS.COMPLETED,
-
-        metadata,
-
-    });
-
-}
-
-
-/*
-=========================================================
-CREATE COMMISSION TRANSACTION
-=========================================================
-
-Records BIASHNET's commission separately.
-
-Example:
-
-Sale = KES 1,000
-Commission = KES 150
-
-This creates:
-
-type:
-COMMISSION
-
-amount:
-150
-=========================================================
-*/
-
-async function createCommissionTransaction({
-
-    orderId,
-
-    paymentId,
-
-    buyerId,
-
-    sellerId,
-
-    listingId,
-
-    amount,
-
-    providerTransactionId,
-
-    metadata = {},
-
-}) {
-
-    const commissionAmount =
-        toMoney(amount);
-
-
-    if (
-        commissionAmount <= 0
-    ) {
-
-        throw new Error(
-            "Commission amount must be greater than zero."
-        );
-
-    }
-
-
-    return createTransaction({
-
-        type:
-            TRANSACTION_TYPES.COMMISSION,
-
-        orderId,
-
-        paymentId,
-
-        buyerId,
-
-        sellerId,
-
-        listingId,
-
-        amount:
-            commissionAmount,
-
-        currency:
-            "KES",
-
-        commissionRate:
-            0,
-
         commissionAmount:
-            commissionAmount,
+            amount,
 
         sellerGross:
             0,
@@ -700,6 +1293,18 @@ async function createCommissionTransaction({
         status:
             PAYMENT_STATUS.COMPLETED,
 
+        direction:
+            "CREDIT",
+
+        recipient:
+            "BIASHNET",
+
+        wallet:
+            "COMPANY_WALLET",
+
+        source:
+            "MARKETPLACE_COMMISSION",
+
         metadata,
 
     });
@@ -707,23 +1312,9 @@ async function createCommissionTransaction({
 }
 
 
-/*
-=========================================================
-CREATE SELLER PAYOUT TRANSACTION
-=========================================================
-
-This is NOT the actual wallet credit.
-
-It records the financial event when seller funds are
-released.
-
-Example:
-
-Seller receives:
-
-KES 850
-
-=========================================================
+/* ========================================================
+   SELLER PAYOUT
+========================================================
 */
 
 async function createSellerPayoutTransaction({
@@ -736,32 +1327,18 @@ async function createSellerPayoutTransaction({
 
     sellerId,
 
-    listingId,
+    listingId = null,
 
     amount,
-
-    providerTransactionId = null,
 
     metadata = {},
 
 }) {
 
-    const payoutAmount =
-        toMoney(amount);
-
-
-    if (
-        payoutAmount <= 0
-    ) {
-
-        throw new Error(
-            "Seller payout amount must be greater than zero."
-        );
-
-    }
-
-
     return createTransaction({
+
+        transactionId:
+            `PAYOUT_${orderId}_${sellerId}`,
 
         type:
             TRANSACTION_TYPES.SELLER_PAYOUT,
@@ -776,8 +1353,7 @@ async function createSellerPayoutTransaction({
 
         listingId,
 
-        amount:
-            payoutAmount,
+        amount,
 
         currency:
             "KES",
@@ -789,23 +1365,31 @@ async function createSellerPayoutTransaction({
             0,
 
         sellerGross:
-            payoutAmount,
+            amount,
 
         sellerNet:
-            payoutAmount,
+            amount,
 
         paymentMethod:
             PAYMENT_METHODS.WALLET,
 
         provider:
-            providerTransactionId
-                ? PAYMENT_PROVIDERS.MPESA
-                : "BIASHNET_WALLET",
-
-        providerTransactionId,
+            "BIASHNET_WALLET",
 
         status:
             PAYMENT_STATUS.COMPLETED,
+
+        payoutStatus:
+            "COMPLETED",
+
+        direction:
+            "CREDIT",
+
+        source:
+            "MARKETPLACE_SETTLEMENT",
+
+        wallet:
+            "SELLER_AVAILABLE",
 
         metadata,
 
@@ -814,10 +1398,132 @@ async function createSellerPayoutTransaction({
 }
 
 
-/*
-=========================================================
-CREATE REFUND TRANSACTION
-=========================================================
+/* ========================================================
+   WITHDRAWAL
+========================================================
+*/
+
+async function createWithdrawalTransaction({
+
+    orderId = null,
+
+    paymentId = null,
+
+    buyerId = null,
+
+    sellerId,
+
+    amount,
+
+    providerTransactionId = null,
+
+    phoneNumber = null,
+
+    withdrawalRequestId = null,
+
+    status =
+        PAYMENT_STATUS.COMPLETED,
+
+    metadata = {},
+
+}) {
+
+    requireValue(
+        sellerId,
+        "Seller ID"
+    );
+
+
+    const withdrawalAmount =
+        toMoney(amount);
+
+
+    if (
+        withdrawalAmount <= 0
+    ) {
+
+        throw new Error(
+            "Withdrawal amount must be greater than zero."
+        );
+
+    }
+
+
+    const transactionId =
+        withdrawalRequestId
+            ? `WITHDRAWAL_${withdrawalRequestId}`
+            : `WITHDRAWAL_${sellerId}_${Date.now()}`;
+
+
+    return createTransaction({
+
+        transactionId,
+
+        type:
+            TRANSACTION_TYPES.WALLET_WITHDRAWAL,
+
+        orderId,
+
+        paymentId,
+
+        buyerId,
+
+        sellerId,
+
+        amount:
+            withdrawalAmount,
+
+        currency:
+            "KES",
+
+        commissionRate:
+            0,
+
+        commissionAmount:
+            0,
+
+        sellerGross:
+            withdrawalAmount,
+
+        sellerNet:
+            withdrawalAmount,
+
+        paymentMethod:
+            PAYMENT_METHODS.WALLET,
+
+        provider:
+            PAYMENT_PROVIDERS.MPESA,
+
+        providerTransactionId,
+
+        status,
+
+        direction:
+            "DEBIT",
+
+        source:
+            "SELLER_WITHDRAWAL",
+
+        metadata: {
+
+            ...metadata,
+
+            phoneNumber:
+                phoneNumber || null,
+
+            withdrawalRequestId:
+                withdrawalRequestId || null,
+
+        },
+
+    });
+
+}
+
+
+/* ========================================================
+   REFUND
+========================================================
 */
 
 async function createRefundTransaction({
@@ -828,9 +1534,9 @@ async function createRefundTransaction({
 
     buyerId,
 
-    sellerId,
+    sellerId = null,
 
-    listingId,
+    listingId = null,
 
     amount,
 
@@ -840,22 +1546,10 @@ async function createRefundTransaction({
 
 }) {
 
-    const refundAmount =
-        toMoney(amount);
-
-
-    if (
-        refundAmount <= 0
-    ) {
-
-        throw new Error(
-            "Refund amount must be greater than zero."
-        );
-
-    }
-
-
     return createTransaction({
+
+        transactionId:
+            `REFUND_${orderId}`,
 
         type:
             TRANSACTION_TYPES.REFUND,
@@ -870,8 +1564,7 @@ async function createRefundTransaction({
 
         listingId,
 
-        amount:
-            refundAmount,
+        amount,
 
         currency:
             "KES",
@@ -899,6 +1592,12 @@ async function createRefundTransaction({
         status:
             PAYMENT_STATUS.REFUNDED,
 
+        direction:
+            "DEBIT",
+
+        source:
+            "MARKETPLACE_REFUND",
+
         metadata,
 
     });
@@ -906,10 +1605,9 @@ async function createRefundTransaction({
 }
 
 
-/*
-=========================================================
-GET TRANSACTION
-=========================================================
+/* ========================================================
+   GET TRANSACTION
+========================================================
 */
 
 async function getTransaction(
@@ -954,10 +1652,9 @@ async function getTransaction(
 }
 
 
-/*
-=========================================================
-GET ORDER TRANSACTIONS
-=========================================================
+/* ========================================================
+   GET ORDER TRANSACTIONS
+========================================================
 */
 
 async function getOrderTransactions(
@@ -984,12 +1681,12 @@ async function getOrderTransactions(
 
 
     return snapshot.docs.map(
-        (doc) => ({
+        document => ({
 
             id:
-                doc.id,
+                document.id,
 
-            ...doc.data(),
+            ...document.data(),
 
         })
     );
@@ -997,26 +1694,289 @@ async function getOrderTransactions(
 }
 
 
-/*
-=========================================================
-EXPORTS
-=========================================================
+/* ========================================================
+   GET SELLER TRANSACTIONS
+========================================================
+*/
+
+async function getSellerTransactions(
+    sellerId,
+    options = {}
+) {
+
+    requireValue(
+        sellerId,
+        "Seller ID"
+    );
+
+
+    let limit =
+        Number(
+            options.limit || 100
+        );
+
+
+    if (
+        !Number.isInteger(limit) ||
+        limit <= 0
+    ) {
+
+        limit = 100;
+
+    }
+
+
+    if (
+        limit > 500
+    ) {
+
+        limit = 500;
+
+    }
+
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.TRANSACTIONS
+            )
+            .where(
+                "sellerId",
+                "==",
+                sellerId
+            )
+            .limit(
+                limit
+            )
+            .get();
+
+
+    const transactions =
+        snapshot.docs.map(
+            document => ({
+
+                id:
+                    document.id,
+
+                ...document.data(),
+
+            })
+        );
+
+
+    transactions.sort(
+        (
+            a,
+            b
+        ) => {
+
+            const aTime =
+                a.createdAt?.toMillis
+                    ? a.createdAt.toMillis()
+                    : new Date(
+                        a.createdAt || 0
+                    ).getTime();
+
+
+            const bTime =
+                b.createdAt?.toMillis
+                    ? b.createdAt.toMillis()
+                    : new Date(
+                        b.createdAt || 0
+                    ).getTime();
+
+
+            return bTime - aTime;
+
+        }
+    );
+
+
+    return transactions;
+
+}
+
+
+/* ========================================================
+   GET BUYER TRANSACTIONS
+========================================================
+*/
+
+async function getBuyerTransactions(
+    buyerId,
+    options = {}
+) {
+
+    requireValue(
+        buyerId,
+        "Buyer ID"
+    );
+
+
+    let limit =
+        Number(
+            options.limit || 100
+        );
+
+
+    if (
+        !Number.isInteger(limit) ||
+        limit <= 0
+    ) {
+
+        limit = 100;
+
+    }
+
+
+    if (
+        limit > 500
+    ) {
+
+        limit = 500;
+
+    }
+
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.TRANSACTIONS
+            )
+            .where(
+                "buyerId",
+                "==",
+                buyerId
+            )
+            .limit(
+                limit
+            )
+            .get();
+
+
+    const transactions =
+        snapshot.docs.map(
+            document => ({
+
+                id:
+                    document.id,
+
+                ...document.data(),
+
+            })
+        );
+
+
+    transactions.sort(
+        (
+            a,
+            b
+        ) => {
+
+            const aTime =
+                a.createdAt?.toMillis
+                    ? a.createdAt.toMillis()
+                    : new Date(
+                        a.createdAt || 0
+                    ).getTime();
+
+
+            const bTime =
+                b.createdAt?.toMillis
+                    ? b.createdAt.toMillis()
+                    : new Date(
+                        b.createdAt || 0
+                    ).getTime();
+
+
+            return bTime - aTime;
+
+        }
+    );
+
+
+    return transactions;
+
+}
+
+
+/* ========================================================
+   GET PAYMENT TRANSACTIONS
+========================================================
+*/
+
+async function getPaymentTransactions(
+    paymentId
+) {
+
+    requireValue(
+        paymentId,
+        "Payment ID"
+    );
+
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.TRANSACTIONS
+            )
+            .where(
+                "paymentId",
+                "==",
+                paymentId
+            )
+            .get();
+
+
+    return snapshot.docs.map(
+        document => ({
+
+            id:
+                document.id,
+
+            ...document.data(),
+
+        })
+    );
+
+}
+
+
+/* ========================================================
+   EXPORTS
+========================================================
 */
 
 module.exports = {
 
     createTransaction,
 
+    createTransactionInTransaction,
+
     createMarketplaceSaleTransaction,
+
+    createPaymentTransaction,
+
+    createSellerHoldTransaction,
 
     createCommissionTransaction,
 
     createSellerPayoutTransaction,
+
+    createWithdrawalTransaction,
 
     createRefundTransaction,
 
     getTransaction,
 
     getOrderTransactions,
+
+    getSellerTransactions,
+
+    getBuyerTransactions,
+
+    getPaymentTransactions,
+
+    toMoney,
 
 };

@@ -1,19 +1,11 @@
 const {
     db,
-    FieldValue
+    FieldValue,
 } = require("../config/firebase");
 
 const {
-    COLLECTIONS
+    COLLECTIONS,
 } = require("../config/collections");
-
-const {
-    TRANSACTION_TYPES
-} = require("../config/paymentConstants");
-
-const {
-    generateTransactionId
-} = require("../utils/codeGenerator");
 
 
 /*
@@ -24,82 +16,187 @@ BIASHNET WALLET SERVICE
 PURPOSE
 ---------------------------------------------------------
 
-Manages seller marketplace wallet balances.
+Controls seller wallet balances.
 
-IMPORTANT:
+WALLET MODEL
+
+availableBalance
+    =
+Money seller can withdraw.
+
+pendingBalance
+    =
+Money earned from successfully paid orders but still
+held until delivery/completion-code verification.
+
+withdrawalBalance
+    =
+Money locked while an M-Pesa withdrawal is processing.
+
+totalEarned
+    =
+Lifetime seller funds released into availableBalance.
+
+totalWithdrawn
+    =
+Lifetime successfully withdrawn amount.
+
+
+MONEY FLOW
+
+BUYER PAYS
+    ↓
+Seller NET
+    ↓
+pendingBalance
+    ↓
+Buyer completion code verified
+    ↓
+Settlement Service
+    ↓
+availableBalance
+    ↓
+Withdrawal Service
+    ↓
+withdrawalBalance
+    ↓
+M-Pesa B2C
+    ↓
+totalWithdrawn
+
+
+IMPORTANT
 
 This service does NOT:
 
-- initiate M-PESA
+- initiate M-Pesa
 - process STK Push
-- verify Firebase authentication
-- calculate marketplace commission
+- process Daraja callbacks
+- calculate commission
+- verify completion codes
 - decide whether an order is completed
-- generate completion codes
-- directly perform M-PESA withdrawals
+- create marketplace orders
 
-It manages wallet money.
+It only manages wallet balances.
 
----------------------------------------------------------
 
-WALLET MODEL
----------------------------------------------------------
+TRANSACTION DESIGN
 
-availableBalance
-    Money seller can withdraw/use.
+There are two classes of methods:
 
-heldBalance
-    Seller money earned from paid orders but not yet
-    released because delivery has not been confirmed.
+1. Standalone wallet methods
+   Start their own Firestore transaction.
 
-withdrawalBalance
-    Money currently locked for an active withdrawal.
+2. Transaction-aware methods
+   Use an existing Firestore transaction.
 
-totalEarned
-    Lifetime amount released to seller.
+The transaction-aware methods are required by:
 
-totalWithdrawn
-    Lifetime amount successfully withdrawn.
+paymentService
+settlementService
+withdrawalService
 
----------------------------------------------------------
+so that:
 
-IMPORTANT:
+wallet
++
+order
++
+ledger
 
-Buyer payment:
-
-KES 1,000
-     ↓
-Seller's KES 850
-     ↓
-HELD
-
-After completion code:
-
-HELD KES 850
-     ↓
-AVAILABLE KES 850
-
-After withdrawal:
-
-AVAILABLE KES 850
-     ↓
-WITHDRAWAL LOCK
-     ↓
-SUCCESS
-     ↓
-WITHDRAWN
+can commit atomically.
 
 =========================================================
 */
 
 
-/*
-=========================================================
-WALLET DEFAULT STRUCTURE
-=========================================================
-*/
+/* ========================================================
+   MONEY
+======================================================== */
 
-function defaultWallet(userId) {
+function toMoney(value) {
+
+    const amount =
+        Number(value);
+
+    if (
+        !Number.isFinite(amount)
+    ) {
+
+        throw new Error(
+            "Invalid wallet amount."
+        );
+
+    }
+
+    return Number(
+        amount.toFixed(2)
+    );
+
+}
+
+
+/* ========================================================
+   POSITIVE AMOUNT
+======================================================== */
+
+function validateAmount(
+    amount,
+    field = "Amount"
+) {
+
+    const value =
+        toMoney(amount);
+
+    if (
+        value <= 0
+    ) {
+
+        throw new Error(
+            `${field} must be greater than zero.`
+        );
+
+    }
+
+    return value;
+
+}
+
+
+/* ========================================================
+   WALLET REFERENCE
+======================================================== */
+
+function getWalletRef(
+    userId
+) {
+
+    if (!userId) {
+
+        throw new Error(
+            "User ID is required."
+        );
+
+    }
+
+    return db
+        .collection(
+            COLLECTIONS.WALLETS
+        )
+        .doc(
+            userId
+        );
+
+}
+
+
+/* ========================================================
+   DEFAULT WALLET
+======================================================== */
+
+function defaultWallet(
+    userId
+) {
 
     return {
 
@@ -111,7 +208,7 @@ function defaultWallet(userId) {
         availableBalance:
             0,
 
-        heldBalance:
+        pendingBalance:
             0,
 
         withdrawalBalance:
@@ -134,99 +231,80 @@ function defaultWallet(userId) {
 }
 
 
-/*
-=========================================================
-MONEY HELPER
-=========================================================
-*/
+/* ========================================================
+   NORMALIZE WALLET
+========================================================
 
-function toMoney(value) {
+Supports old wallets that may still contain:
 
-    const amount =
-        Number(value);
+heldBalance
 
+We migrate that value into:
 
-    if (
-        !Number.isFinite(amount)
-    ) {
+pendingBalance
+======================================================== */
 
-        throw new Error(
-            "Invalid wallet amount."
-        );
-
-    }
-
-
-    return Number(
-        amount.toFixed(2)
-    );
-
-}
-
-
-/*
-=========================================================
-VALIDATE POSITIVE AMOUNT
-=========================================================
-*/
-
-function validateAmount(
-    amount,
-    field = "Amount"
+function normalizeWalletData(
+    wallet = {}
 ) {
 
-    const value =
-        toMoney(amount);
+    const pendingBalance =
+        wallet.pendingBalance !== undefined
+            ? wallet.pendingBalance
+            : wallet.heldBalance || 0;
 
+    return {
 
-    if (
-        value <= 0
-    ) {
+        ...wallet,
 
-        throw new Error(
-            `${field} must be greater than zero.`
-        );
+        availableBalance:
+            toMoney(
+                wallet.availableBalance || 0
+            ),
 
-    }
+        pendingBalance:
+            toMoney(
+                pendingBalance
+            ),
 
+        withdrawalBalance:
+            toMoney(
+                wallet.withdrawalBalance || 0
+            ),
 
-    return value;
+        totalEarned:
+            toMoney(
+                wallet.totalEarned || 0
+            ),
+
+        totalWithdrawn:
+            toMoney(
+                wallet.totalWithdrawn || 0
+            ),
+
+        currency:
+            wallet.currency || "KES",
+
+    };
 
 }
 
 
-/*
-=========================================================
-GET WALLET
-=========================================================
-*/
+/* ========================================================
+   GET WALLET
+======================================================== */
 
 async function getWallet(
     userId
 ) {
 
-    if (!userId) {
-
-        throw new Error(
-            "User ID is required."
-        );
-
-    }
-
-
     const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                userId
-            );
-
+        getWalletRef(
+            userId
+        );
 
     const walletSnap =
         await walletRef.get();
-
 
     if (
         !walletSnap.exists
@@ -236,55 +314,71 @@ async function getWallet(
 
     }
 
-
     return {
 
         id:
             walletSnap.id,
 
-        ...walletSnap.data(),
+        ...normalizeWalletData(
+            walletSnap.data()
+        ),
 
     };
 
 }
 
 
-/*
-=========================================================
-CREATE WALLET IF IT DOES NOT EXIST
-=========================================================
-*/
+/* ========================================================
+   CREATE WALLET
+======================================================== */
 
 async function createWalletIfNotExists(
     userId
 ) {
 
-    if (!userId) {
-
-        throw new Error(
-            "User ID is required."
-        );
-
-    }
-
-
     const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                userId
-            );
-
+        getWalletRef(
+            userId
+        );
 
     const walletSnap =
         await walletRef.get();
 
-
     if (
         walletSnap.exists
     ) {
+
+        const existing =
+            normalizeWalletData(
+                walletSnap.data()
+            );
+
+        /*
+        Migrate old heldBalance wallets.
+        */
+
+        const updates = {
+
+            pendingBalance:
+                existing.pendingBalance,
+
+            updatedAt:
+                FieldValue.serverTimestamp(),
+
+        };
+
+        if (
+            existing.heldBalance !== undefined
+        ) {
+
+            updates.heldBalance =
+                FieldValue.delete();
+
+        }
+
+        await walletRef.update(
+            updates
+        );
 
         return {
 
@@ -295,7 +389,10 @@ async function createWalletIfNotExists(
                 id:
                     walletSnap.id,
 
-                ...walletSnap.data(),
+                ...existing,
+
+                pendingBalance:
+                    existing.pendingBalance,
 
             },
 
@@ -333,41 +430,32 @@ async function createWalletIfNotExists(
 }
 
 
-/*
-=========================================================
-HOLD SELLER FUNDS
-=========================================================
+/* ========================================================
+   HOLD SELLER FUNDS — TRANSACTION VERSION
+========================================================
 
-Called after successful marketplace payment.
+Called by paymentService.
 
 Example:
 
-Order:
+Sale             = KES 1,000
+Commission       = KES 50
+Seller net       = KES 950
 
-KES 1,000
+After payment:
 
-Commission:
+pendingBalance
+    OLD 0
+    +950
+    ----
+    950
 
-KES 150
+availableBalance remains unchanged.
+======================================================== */
 
-Seller:
+function holdSellerFundsInTransaction({
 
-KES 850
-
-The KES 850 is NOT available yet.
-
-It becomes:
-
-heldBalance = 850
-
----------------------------------------------------------
-
-This is called by settlementService.
-
-=========================================================
-*/
-
-async function holdSellerFunds({
+    transaction,
 
     sellerId,
 
@@ -377,23 +465,23 @@ async function holdSellerFunds({
 
     paymentId,
 
-    transactionId = null,
-
 }) {
 
-    if (!sellerId) {
+    if (
+        !transaction ||
+        typeof transaction.get !== "function"
+    ) {
 
         throw new Error(
-            "Seller ID is required."
+            "Firestore transaction object is required."
         );
 
     }
 
-
     const heldAmount =
         validateAmount(
             amount,
-            "Held amount"
+            "Seller held amount"
         );
 
 
@@ -416,32 +504,19 @@ async function holdSellerFunds({
 
 
     const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                sellerId
-            );
+        getWalletRef(
+            sellerId
+        );
 
 
-    const finalTransactionId =
-        transactionId ||
-        generateTransactionId();
+    return {
 
+        walletRef,
 
-    const now =
-        new Date();
+        amount:
+            heldAmount,
 
-
-    /*
-    =====================================================
-    ATOMIC WALLET UPDATE
-    =====================================================
-    */
-
-    await db.runTransaction(
-        async (transaction) => {
+        read: async () => {
 
             const walletSnap =
                 await transaction.get(
@@ -449,35 +524,19 @@ async function holdSellerFunds({
                 );
 
 
-            let wallet;
-
-
-            if (
+            const wallet =
                 walletSnap.exists
-            ) {
-
-                wallet =
-                    walletSnap.data();
-
-            } else {
-
-                wallet =
-                    defaultWallet(
+                    ? normalizeWalletData(
+                        walletSnap.data()
+                    )
+                    : defaultWallet(
                         sellerId
                     );
 
-            }
 
-
-            const currentHeld =
+            const newPending =
                 toMoney(
-                    wallet.heldBalance || 0
-                );
-
-
-            const newHeld =
-                toMoney(
-                    currentHeld +
+                    wallet.pendingBalance +
                     heldAmount
                 );
 
@@ -487,89 +546,78 @@ async function holdSellerFunds({
             ) {
 
                 transaction.update(
+
                     walletRef,
+
                     {
 
-                        heldBalance:
-                            newHeld,
+                        pendingBalance:
+                            newPending,
 
                         updatedAt:
-                            now,
+                            FieldValue.serverTimestamp(),
 
                     }
+
                 );
 
             } else {
 
                 transaction.set(
+
                     walletRef,
+
                     {
 
                         ...wallet,
 
-                        heldBalance:
-                            newHeld,
+                        pendingBalance:
+                            newPending,
+
+                        updatedAt:
+                            FieldValue.serverTimestamp(),
 
                     }
+
                 );
 
             }
 
-        }
-    );
 
+            return {
 
-    console.log(
-        "🔒 Seller funds held:",
-        sellerId,
-        heldAmount
-    );
+                sellerId,
 
+                orderId,
 
-    return {
+                paymentId,
 
-        success: true,
+                amount:
+                    heldAmount,
 
-        sellerId,
+                oldPendingBalance:
+                    wallet.pendingBalance,
 
-        orderId,
+                newPendingBalance:
+                    newPending,
 
-        paymentId,
+                status:
+                    "HELD",
 
-        transactionId:
-            finalTransactionId,
+            };
 
-        amount:
-            heldAmount,
-
-        status:
-            "HELD",
+        },
 
     };
 
 }
 
 
-/*
-=========================================================
-RELEASE HELD SELLER FUNDS
-=========================================================
+/* ========================================================
+   HOLD SELLER FUNDS — STANDALONE
+======================================================== */
 
-Called AFTER successful completion-code verification.
-
-Example:
-
-heldBalance = 850
-
-After release:
-
-heldBalance = 0
-availableBalance = 850
-
-=========================================================
-*/
-
-async function releaseHeldFunds({
+async function holdSellerFunds({
 
     sellerId,
 
@@ -579,14 +627,85 @@ async function releaseHeldFunds({
 
     paymentId,
 
-    transactionId = null,
+}) {
+
+    let result;
+
+    await db.runTransaction(
+        async transaction => {
+
+            const operation =
+                holdSellerFundsInTransaction({
+
+                    transaction,
+
+                    sellerId,
+
+                    amount,
+
+                    orderId,
+
+                    paymentId,
+
+                });
+
+
+            result =
+                await operation.read();
+
+        }
+    );
+
+
+    console.log(
+        "🔒 SELLER FUNDS HELD:",
+        result
+    );
+
+
+    return {
+
+        success: true,
+
+        ...result,
+
+    };
+
+}
+
+
+/* ========================================================
+   RELEASE SELLER FUNDS — TRANSACTION VERSION
+========================================================
+
+Called by settlementService.
+
+pendingBalance
+       ↓
+availableBalance
+======================================================== */
+
+function releaseHeldFundsInTransaction({
+
+    transaction,
+
+    sellerId,
+
+    amount,
+
+    orderId,
+
+    paymentId,
 
 }) {
 
-    if (!sellerId) {
+    if (
+        !transaction ||
+        typeof transaction.get !== "function"
+    ) {
 
         throw new Error(
-            "Seller ID is required."
+            "Firestore transaction object is required."
         );
 
     }
@@ -609,26 +728,19 @@ async function releaseHeldFunds({
 
 
     const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                sellerId
-            );
+        getWalletRef(
+            sellerId
+        );
 
 
-    const finalTransactionId =
-        transactionId ||
-        generateTransactionId();
+    return {
 
+        walletRef,
 
-    const now =
-        new Date();
+        amount:
+            releaseAmount,
 
-
-    await db.runTransaction(
-        async (transaction) => {
+        read: async () => {
 
             const walletSnap =
                 await transaction.get(
@@ -648,75 +760,154 @@ async function releaseHeldFunds({
 
 
             const wallet =
-                walletSnap.data();
-
-
-            const heldBalance =
-                toMoney(
-                    wallet.heldBalance || 0
+                normalizeWalletData(
+                    walletSnap.data()
                 );
 
 
             if (
-                heldBalance <
+                wallet.pendingBalance <
                 releaseAmount
             ) {
 
                 throw new Error(
-                    "Insufficient held balance."
+
+                    `Insufficient pending seller balance. ` +
+                    `Available pending: KES ${wallet.pendingBalance}. ` +
+                    `Required: KES ${releaseAmount}.`
+
                 );
 
             }
 
 
-            const availableBalance =
+            const newPendingBalance =
                 toMoney(
-                    wallet.availableBalance || 0
+                    wallet.pendingBalance -
+                    releaseAmount
                 );
 
 
-            const totalEarned =
+            const newAvailableBalance =
                 toMoney(
-                    wallet.totalEarned || 0
+                    wallet.availableBalance +
+                    releaseAmount
+                );
+
+
+            const newTotalEarned =
+                toMoney(
+                    wallet.totalEarned +
+                    releaseAmount
                 );
 
 
             transaction.update(
+
                 walletRef,
+
                 {
 
-                    heldBalance:
-                        toMoney(
-                            heldBalance -
-                            releaseAmount
-                        ),
+                    pendingBalance:
+                        newPendingBalance,
 
                     availableBalance:
-                        toMoney(
-                            availableBalance +
-                            releaseAmount
-                        ),
+                        newAvailableBalance,
 
                     totalEarned:
-                        toMoney(
-                            totalEarned +
-                            releaseAmount
-                        ),
+                        newTotalEarned,
 
                     updatedAt:
-                        now,
+                        FieldValue.serverTimestamp(),
 
                 }
+
             );
+
+
+            return {
+
+                sellerId,
+
+                orderId,
+
+                paymentId:
+                    paymentId || null,
+
+                amount:
+                    releaseAmount,
+
+                oldPendingBalance:
+                    wallet.pendingBalance,
+
+                newPendingBalance,
+
+                oldAvailableBalance:
+                    wallet.availableBalance,
+
+                newAvailableBalance,
+
+                newTotalEarned,
+
+                status:
+                    "RELEASED",
+
+            };
+
+        },
+
+    };
+
+}
+
+
+/* ========================================================
+   RELEASE SELLER FUNDS — STANDALONE
+======================================================== */
+
+async function releaseHeldFunds({
+
+    sellerId,
+
+    amount,
+
+    orderId,
+
+    paymentId,
+
+}) {
+
+    let result;
+
+    await db.runTransaction(
+        async transaction => {
+
+            const operation =
+                releaseHeldFundsInTransaction({
+
+                    transaction,
+
+                    sellerId,
+
+                    amount,
+
+                    orderId,
+
+                    paymentId,
+
+                });
+
+
+            result =
+                await operation.read();
 
         }
     );
 
 
     console.log(
-        "🔓 Seller funds released:",
-        sellerId,
-        releaseAmount
+        "🔓 SELLER FUNDS RELEASED:",
+        result
     );
 
 
@@ -724,51 +915,180 @@ async function releaseHeldFunds({
 
         success: true,
 
-        sellerId,
-
-        orderId,
-
-        paymentId,
-
-        transactionId:
-            finalTransactionId,
-
-        amount:
-            releaseAmount,
-
-        status:
-            "RELEASED",
+        ...result,
 
     };
 
 }
 
 
-/*
-=========================================================
-LOCK FUNDS FOR WITHDRAWAL
-=========================================================
+/* ========================================================
+   LOCK WITHDRAWAL — TRANSACTION VERSION
+========================================================
 
-Seller requests withdrawal.
+availableBalance
+        ↓
+withdrawalBalance
+======================================================== */
 
-Example:
+function lockWithdrawalFundsInTransaction({
 
-availableBalance = 850
+    transaction,
 
-Seller requests:
+    sellerId,
 
-500
+    amount,
 
-Result:
+    withdrawalId,
 
-availableBalance = 350
-withdrawalBalance = 500
+}) {
 
-The money is temporarily locked while M-PESA withdrawal
-is being processed.
+    if (
+        !transaction ||
+        typeof transaction.get !== "function"
+    ) {
 
-=========================================================
-*/
+        throw new Error(
+            "Firestore transaction object is required."
+        );
+
+    }
+
+
+    const withdrawalAmount =
+        validateAmount(
+            amount,
+            "Withdrawal amount"
+        );
+
+
+    if (!withdrawalId) {
+
+        throw new Error(
+            "Withdrawal ID is required."
+        );
+
+    }
+
+
+    const walletRef =
+        getWalletRef(
+            sellerId
+        );
+
+
+    return {
+
+        walletRef,
+
+        amount:
+            withdrawalAmount,
+
+        read: async () => {
+
+            const walletSnap =
+                await transaction.get(
+                    walletRef
+                );
+
+
+            if (
+                !walletSnap.exists
+            ) {
+
+                throw new Error(
+                    "Seller wallet does not exist."
+                );
+
+            }
+
+
+            const wallet =
+                normalizeWalletData(
+                    walletSnap.data()
+                );
+
+
+            if (
+                wallet.availableBalance <
+                withdrawalAmount
+            ) {
+
+                throw new Error(
+
+                    `Insufficient available balance. ` +
+                    `Available: KES ${wallet.availableBalance}. ` +
+                    `Requested: KES ${withdrawalAmount}.`
+
+                );
+
+            }
+
+
+            const newAvailableBalance =
+                toMoney(
+                    wallet.availableBalance -
+                    withdrawalAmount
+                );
+
+
+            const newWithdrawalBalance =
+                toMoney(
+                    wallet.withdrawalBalance +
+                    withdrawalAmount
+                );
+
+
+            transaction.update(
+
+                walletRef,
+
+                {
+
+                    availableBalance:
+                        newAvailableBalance,
+
+                    withdrawalBalance:
+                        newWithdrawalBalance,
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                }
+
+            );
+
+
+            return {
+
+                sellerId,
+
+                withdrawalId,
+
+                amount:
+                    withdrawalAmount,
+
+                availableBalance:
+                    newAvailableBalance,
+
+                withdrawalBalance:
+                    newWithdrawalBalance,
+
+                status:
+                    "LOCKED",
+
+            };
+
+        },
+
+    };
+
+}
+
+
+/* ========================================================
+   LOCK WITHDRAWAL — STANDALONE
+======================================================== */
 
 async function lockWithdrawalFunds({
 
@@ -780,14 +1100,58 @@ async function lockWithdrawalFunds({
 
 }) {
 
-    if (!sellerId) {
+    let result;
 
-        throw new Error(
-            "Seller ID is required."
-        );
+    await db.runTransaction(
+        async transaction => {
 
-    }
+            const operation =
+                lockWithdrawalFundsInTransaction({
 
+                    transaction,
+
+                    sellerId,
+
+                    amount,
+
+                    withdrawalId,
+
+                });
+
+
+            result =
+                await operation.read();
+
+        }
+    );
+
+
+    return {
+
+        success: true,
+
+        ...result,
+
+    };
+
+}
+
+
+/* ========================================================
+   COMPLETE WITHDRAWAL — TRANSACTION VERSION
+======================================================== */
+
+function completeWithdrawalInTransaction({
+
+    transaction,
+
+    sellerId,
+
+    amount,
+
+    withdrawalId,
+
+}) {
 
     const withdrawalAmount =
         validateAmount(
@@ -806,21 +1170,19 @@ async function lockWithdrawalFunds({
 
 
     const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                sellerId
-            );
+        getWalletRef(
+            sellerId
+        );
 
 
-    const now =
-        new Date();
+    return {
 
+        walletRef,
 
-    await db.runTransaction(
-        async (transaction) => {
+        amount:
+            withdrawalAmount,
+
+        read: async () => {
 
             const walletSnap =
                 await transaction.get(
@@ -840,96 +1202,87 @@ async function lockWithdrawalFunds({
 
 
             const wallet =
-                walletSnap.data();
-
-
-            const availableBalance =
-                toMoney(
-                    wallet.availableBalance || 0
+                normalizeWalletData(
+                    walletSnap.data()
                 );
 
 
             if (
-                availableBalance <
+                wallet.withdrawalBalance <
                 withdrawalAmount
             ) {
 
                 throw new Error(
-                    "Insufficient available wallet balance."
+                    "Withdrawal balance is insufficient."
                 );
 
             }
 
 
-            const currentWithdrawalBalance =
+            const newWithdrawalBalance =
                 toMoney(
-                    wallet.withdrawalBalance || 0
+                    wallet.withdrawalBalance -
+                    withdrawalAmount
+                );
+
+
+            const newTotalWithdrawn =
+                toMoney(
+                    wallet.totalWithdrawn +
+                    withdrawalAmount
                 );
 
 
             transaction.update(
+
                 walletRef,
+
                 {
 
-                    availableBalance:
-                        toMoney(
-                            availableBalance -
-                            withdrawalAmount
-                        ),
-
                     withdrawalBalance:
-                        toMoney(
-                            currentWithdrawalBalance +
-                            withdrawalAmount
-                        ),
+                        newWithdrawalBalance,
+
+                    totalWithdrawn:
+                        newTotalWithdrawn,
 
                     updatedAt:
-                        now,
+                        FieldValue.serverTimestamp(),
 
                 }
+
             );
 
-        }
-    );
 
+            return {
 
-    return {
+                sellerId,
 
-        success: true,
+                withdrawalId,
 
-        sellerId,
+                amount:
+                    withdrawalAmount,
 
-        withdrawalId,
+                withdrawalBalance:
+                    newWithdrawalBalance,
 
-        amount:
-            withdrawalAmount,
+                totalWithdrawn:
+                    newTotalWithdrawn,
 
-        status:
-            "LOCKED",
+                status:
+                    "COMPLETED",
+
+            };
+
+        },
 
     };
 
 }
 
 
-/*
-=========================================================
-COMPLETE WITHDRAWAL
-=========================================================
-
-Called after successful M-PESA B2C withdrawal.
-
-Example:
-
-withdrawalBalance = 500
-
-After success:
-
-withdrawalBalance = 0
-totalWithdrawn += 500
-
-=========================================================
-*/
+/* ========================================================
+   COMPLETE WITHDRAWAL — STANDALONE
+======================================================== */
 
 async function completeWithdrawal({
 
@@ -941,14 +1294,58 @@ async function completeWithdrawal({
 
 }) {
 
-    if (!sellerId) {
+    let result;
 
-        throw new Error(
-            "Seller ID is required."
-        );
+    await db.runTransaction(
+        async transaction => {
 
-    }
+            const operation =
+                completeWithdrawalInTransaction({
 
+                    transaction,
+
+                    sellerId,
+
+                    amount,
+
+                    withdrawalId,
+
+                });
+
+
+            result =
+                await operation.read();
+
+        }
+    );
+
+
+    return {
+
+        success: true,
+
+        ...result,
+
+    };
+
+}
+
+
+/* ========================================================
+   RESTORE FAILED WITHDRAWAL
+======================================================== */
+
+function restoreFailedWithdrawalInTransaction({
+
+    transaction,
+
+    sellerId,
+
+    amount,
+
+    withdrawalId,
+
+}) {
 
     const withdrawalAmount =
         validateAmount(
@@ -967,21 +1364,19 @@ async function completeWithdrawal({
 
 
     const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                sellerId
-            );
+        getWalletRef(
+            sellerId
+        );
 
 
-    const now =
-        new Date();
+    return {
 
+        walletRef,
 
-    await db.runTransaction(
-        async (transaction) => {
+        amount:
+            withdrawalAmount,
+
+        read: async () => {
 
             const walletSnap =
                 await transaction.get(
@@ -1001,17 +1396,13 @@ async function completeWithdrawal({
 
 
             const wallet =
-                walletSnap.data();
-
-
-            const locked =
-                toMoney(
-                    wallet.withdrawalBalance || 0
+                normalizeWalletData(
+                    walletSnap.data()
                 );
 
 
             if (
-                locked <
+                wallet.withdrawalBalance <
                 withdrawalAmount
             ) {
 
@@ -1022,80 +1413,70 @@ async function completeWithdrawal({
             }
 
 
-            const totalWithdrawn =
+            const newWithdrawalBalance =
                 toMoney(
-                    wallet.totalWithdrawn || 0
+                    wallet.withdrawalBalance -
+                    withdrawalAmount
+                );
+
+
+            const newAvailableBalance =
+                toMoney(
+                    wallet.availableBalance +
+                    withdrawalAmount
                 );
 
 
             transaction.update(
+
                 walletRef,
+
                 {
 
                     withdrawalBalance:
-                        toMoney(
-                            locked -
-                            withdrawalAmount
-                        ),
+                        newWithdrawalBalance,
 
-                    totalWithdrawn:
-                        toMoney(
-                            totalWithdrawn +
-                            withdrawalAmount
-                        ),
+                    availableBalance:
+                        newAvailableBalance,
 
                     updatedAt:
-                        now,
+                        FieldValue.serverTimestamp(),
 
                 }
+
             );
 
-        }
-    );
 
+            return {
 
-    return {
+                sellerId,
 
-        success: true,
+                withdrawalId,
 
-        sellerId,
+                amount:
+                    withdrawalAmount,
 
-        withdrawalId,
+                withdrawalBalance:
+                    newWithdrawalBalance,
 
-        amount:
-            withdrawalAmount,
+                availableBalance:
+                    newAvailableBalance,
 
-        status:
-            "COMPLETED",
+                status:
+                    "RESTORED",
+
+            };
+
+        },
 
     };
 
 }
 
 
-/*
-=========================================================
-RESTORE FAILED WITHDRAWAL
-=========================================================
-
-If M-PESA B2C withdrawal fails:
-
-withdrawalBalance
-       ↓
-availableBalance
-
-Example:
-
-withdrawalBalance = 500
-availableBalance = 350
-
-After failure:
-
-withdrawalBalance = 0
-availableBalance = 850
-
-=========================================================
-*/
+/* ========================================================
+   RESTORE FAILED WITHDRAWAL — STANDALONE
+======================================================== */
 
 async function restoreFailedWithdrawal({
 
@@ -1107,114 +1488,27 @@ async function restoreFailedWithdrawal({
 
 }) {
 
-    if (!sellerId) {
-
-        throw new Error(
-            "Seller ID is required."
-        );
-
-    }
-
-
-    const withdrawalAmount =
-        validateAmount(
-            amount,
-            "Withdrawal amount"
-        );
-
-
-    if (!withdrawalId) {
-
-        throw new Error(
-            "Withdrawal ID is required."
-        );
-
-    }
-
-
-    const walletRef =
-        db
-            .collection(
-                COLLECTIONS.WALLETS
-            )
-            .doc(
-                sellerId
-            );
-
-
-    const now =
-        new Date();
-
+    let result;
 
     await db.runTransaction(
-        async (transaction) => {
+        async transaction => {
 
-            const walletSnap =
-                await transaction.get(
-                    walletRef
-                );
+            const operation =
+                restoreFailedWithdrawalInTransaction({
 
+                    transaction,
 
-            if (
-                !walletSnap.exists
-            ) {
+                    sellerId,
 
-                throw new Error(
-                    "Seller wallet does not exist."
-                );
+                    amount,
 
-            }
+                    withdrawalId,
+
+                });
 
 
-            const wallet =
-                walletSnap.data();
-
-
-            const withdrawalBalance =
-                toMoney(
-                    wallet.withdrawalBalance || 0
-                );
-
-
-            if (
-                withdrawalBalance <
-                withdrawalAmount
-            ) {
-
-                throw new Error(
-                    "Withdrawal balance is insufficient."
-                );
-
-            }
-
-
-            const availableBalance =
-                toMoney(
-                    wallet.availableBalance || 0
-                );
-
-
-            transaction.update(
-                walletRef,
-                {
-
-                    withdrawalBalance:
-                        toMoney(
-                            withdrawalBalance -
-                            withdrawalAmount
-                        ),
-
-                    availableBalance:
-                        toMoney(
-                            availableBalance +
-                            withdrawalAmount
-                        ),
-
-                    updatedAt:
-                        now,
-
-                }
-            );
+            result =
+                await operation.read();
 
         }
     );
@@ -1224,26 +1518,16 @@ async function restoreFailedWithdrawal({
 
         success: true,
 
-        sellerId,
-
-        withdrawalId,
-
-        amount:
-            withdrawalAmount,
-
-        status:
-            "RESTORED",
+        ...result,
 
     };
 
 }
 
 
-/*
-=========================================================
-GET AVAILABLE BALANCE
-=========================================================
-*/
+/* ========================================================
+   GET AVAILABLE BALANCE
+======================================================== */
 
 async function getAvailableBalance(
     sellerId
@@ -1263,16 +1547,43 @@ async function getAvailableBalance(
 
 
     return toMoney(
-        wallet.availableBalance || 0
+        wallet.availableBalance
     );
 
 }
 
-/*
-=========================================================
-GET SELLER WALLET SUMMARY
-=========================================================
-*/
+
+/* ========================================================
+   GET PENDING BALANCE
+======================================================== */
+
+async function getPendingBalance(
+    sellerId
+) {
+
+    const wallet =
+        await getWallet(
+            sellerId
+        );
+
+
+    if (!wallet) {
+
+        return 0;
+
+    }
+
+
+    return toMoney(
+        wallet.pendingBalance
+    );
+
+}
+
+
+/* ========================================================
+   GET SELLER WALLET SUMMARY
+======================================================== */
 
 async function getWalletSummary(
     sellerId
@@ -1299,7 +1610,7 @@ async function getWalletSummary(
             availableBalance:
                 0,
 
-            heldBalance:
+            pendingBalance:
                 0,
 
             withdrawalBalance:
@@ -1324,63 +1635,76 @@ async function getWalletSummary(
             sellerId,
 
         currency:
-            wallet.currency ||
-            "KES",
+            wallet.currency,
 
         availableBalance:
-            toMoney(
-                wallet.availableBalance || 0
-            ),
+            wallet.availableBalance,
 
-        heldBalance:
-            toMoney(
-                wallet.heldBalance || 0
-            ),
+        pendingBalance:
+            wallet.pendingBalance,
 
         withdrawalBalance:
-            toMoney(
-                wallet.withdrawalBalance || 0
-            ),
+            wallet.withdrawalBalance,
 
         totalEarned:
-            toMoney(
-                wallet.totalEarned || 0
-            ),
+            wallet.totalEarned,
 
         totalWithdrawn:
-            toMoney(
-                wallet.totalWithdrawn || 0
-            ),
+            wallet.totalWithdrawn,
 
     };
 
 }
 
 
-/*
-=========================================================
-EXPORTS
-=========================================================
-*/
+/* ========================================================
+   EXPORTS
+======================================================== */
 
 module.exports = {
 
-    getWallet,
+    /*
+    References / reads
+    */
 
+    getWallet,
     createWalletIfNotExists,
+    getAvailableBalance,
+    getPendingBalance,
+    getWalletSummary,
+
+    /*
+    Payment / escrow
+    */
 
     holdSellerFunds,
+    holdSellerFundsInTransaction,
+
+    /*
+    Settlement
+    */
 
     releaseHeldFunds,
+    releaseHeldFundsInTransaction,
+
+    /*
+    Withdrawals
+    */
 
     lockWithdrawalFunds,
+    lockWithdrawalFundsInTransaction,
 
     completeWithdrawal,
+    completeWithdrawalInTransaction,
 
     restoreFailedWithdrawal,
+    restoreFailedWithdrawalInTransaction,
 
-    getAvailableBalance,
+    /*
+    Money
+    */
 
-    getWalletSummary,
+    toMoney,
+    validateAmount,
 
 };

@@ -6,67 +6,86 @@ BIASHNET SETTLEMENT SERVICE
 RESPONSIBILITY
 ---------------------------------------------------------
 
-Releases seller funds AFTER:
-
-1. Buyer payment is completed
-2. Funds have been placed on HOLD
-3. Order has been delivered
-4. Buyer gives completion code
-5. Seller verifies completion code
-6. Order becomes COMPLETED
-7. Settlement releases seller funds
+Releases HELD seller funds after successful delivery
+confirmation.
 
 FLOW:
 
 PAYMENT
    ↓
+ORDER PAID
+   ↓
 SELLER FUNDS HELD
    ↓
-SELLER PENDING BALANCE
+BUYER RECEIVES COMPLETION CODE
    ↓
-DELIVERY
+SELLER DELIVERS
    ↓
-COMPLETION CODE VERIFIED
-   ↓
-ORDER COMPLETED
+SELLER VERIFIES COMPLETION CODE
    ↓
 SETTLEMENT SERVICE
    ↓
-PENDING BALANCE DECREASED
+SELLER PENDING BALANCE DECREASED
    ↓
-AVAILABLE BALANCE INCREASED
+SELLER AVAILABLE BALANCE INCREASED
    ↓
-SELLER CAN WITHDRAW
+BIASHNET COMPANY WALLET CREDITED
+   ↓
+LEDGER TRANSACTIONS CREATED
+   ↓
+SELLER PAYOUT RELEASED
 
 IMPORTANT:
 
-This service does NOT:
+This service:
 
-- initiate M-Pesa
-- process STK
-- process callbacks
-- verify completion codes
-- initiate withdrawals
+- does NOT initiate M-Pesa
+- does NOT send STK
+- does NOT process callbacks
+- does NOT verify the completion code
+- does NOT initiate withdrawals
 
-Those belong to other services.
+It ONLY releases funds already held by the
+payment/marketplace flow.
 
-Settlement is:
+=========================================================
+MULTI-SELLER SUPPORT
+=========================================================
 
-- atomic
-- idempotent
-- server-authoritative
-- ledger-based
+An order may contain:
+
+sellerBreakdown: [
+
+  {
+    sellerId,
+    grossAmount,
+    commissionAmount,
+    sellerNet,
+    sellerPaymentStatus,
+    payoutStatus
+  },
+
+  ...
+]
+
+Settlement is therefore performed ONE SELLER AT A TIME.
+
+sellerId MUST identify the specific seller being settled.
+
 =========================================================
 */
+
 
 const {
     db,
     FieldValue,
 } = require("../config/firebase");
 
+
 const {
     COLLECTIONS,
 } = require("../config/collections");
+
 
 const {
     PAYMENT_STATUS,
@@ -76,18 +95,57 @@ const {
     TRANSACTION_TYPES,
 } = require("../config/paymentConstants");
 
+const walletService =
+    require("./wallet");
+
 
 /*
 =========================================================
-MONEY HELPER
+COMPANY WALLET
+=========================================================
+
+We intentionally keep the company wallet separate from
+seller wallets.
+
+Preferred:
+
+COLLECTIONS.COMPANY_WALLETS
+
+If your constants do not yet contain COMPANY_WALLETS,
+we safely fall back to:
+
+companyWallets
+
+Document:
+
+companyWallets/BIASHNET
+
+=========================================================
+*/
+
+const COMPANY_WALLET_COLLECTION =
+    COLLECTIONS.COMPANY_WALLETS ||
+    "companyWallets";
+
+
+const COMPANY_WALLET_ID =
+    "BIASHNET";
+
+
+/*
+=========================================================
+MONEY
 =========================================================
 */
 
 function toMoney(value) {
 
-    const amount = Number(value);
+    const amount =
+        Number(value);
 
-    if (!Number.isFinite(amount)) {
+    if (
+        !Number.isFinite(amount)
+    ) {
 
         return 0;
 
@@ -102,11 +160,30 @@ function toMoney(value) {
 
 /*
 =========================================================
-WALLET REFERENCE
+NORMALIZE STATUS
 =========================================================
 */
 
-function getWalletRef(sellerId) {
+function normalizeStatus(value) {
+
+    return String(
+        value || ""
+    )
+        .trim()
+        .toUpperCase();
+
+}
+
+
+/*
+=========================================================
+SELLER WALLET REFERENCE
+=========================================================
+*/
+
+function getSellerWalletRef(
+    sellerId
+) {
 
     if (!sellerId) {
 
@@ -120,7 +197,62 @@ function getWalletRef(sellerId) {
         .collection(
             COLLECTIONS.WALLETS
         )
-        .doc(sellerId);
+        .doc(
+            sellerId
+        );
+
+}
+
+
+/*
+=========================================================
+COMPANY WALLET REFERENCE
+=========================================================
+*/
+
+function getCompanyWalletRef() {
+
+    return db
+        .collection(
+            COMPANY_WALLET_COLLECTION
+        )
+        .doc(
+            COMPANY_WALLET_ID
+        );
+
+}
+
+
+/*
+=========================================================
+GET SELLER BREAKDOWN
+=========================================================
+*/
+
+function getSellerBreakdown(
+    order,
+    sellerId
+) {
+
+    if (
+        !Array.isArray(
+            order.sellerBreakdown
+        )
+    ) {
+
+        return null;
+
+    }
+
+    return (
+        order.sellerBreakdown.find(
+            seller =>
+                seller &&
+                seller.sellerId ===
+                sellerId
+        ) ||
+        null
+    );
 
 }
 
@@ -130,16 +262,15 @@ function getWalletRef(sellerId) {
 SETTLE MARKETPLACE ORDER
 =========================================================
 
-IMPORTANT:
+Settles ONE seller portion of an order.
 
-This function assumes:
+Example:
 
-ONE MARKETPLACE ORDER
-        =
-ONE SELLER
-
-That is why checkout should split a multi-seller
-cart into separate marketplace orders.
+settleMarketplaceOrder({
+    orderId,
+    sellerId,
+    completionCodeVerified: true
+});
 
 =========================================================
 */
@@ -150,7 +281,15 @@ async function settleMarketplaceOrder({
 
     sellerId,
 
+    completionCodeVerified = false,
+
 }) {
+
+    /*
+    =====================================================
+    BASIC VALIDATION
+    =====================================================
+    */
 
     if (!orderId) {
 
@@ -170,19 +309,48 @@ async function settleMarketplaceOrder({
     }
 
 
+    if (
+        completionCodeVerified !== true
+    ) {
+
+        throw new Error(
+            "Seller settlement requires a verified completion code."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    REFERENCES
+    =====================================================
+    */
+
     const orderRef =
         db
             .collection(
                 COLLECTIONS.ORDERS
             )
-            .doc(orderId);
+            .doc(
+                orderId
+            );
 
 
-    const walletRef =
-        getWalletRef(
+    const sellerWalletRef =
+        getSellerWalletRef(
             sellerId
         );
 
+
+    const companyWalletRef =
+        getCompanyWalletRef();
+
+
+    /*
+    =====================================================
+    RESULT HOLDER
+    =====================================================
+    */
 
     let result;
 
@@ -197,9 +365,9 @@ async function settleMarketplaceOrder({
         async (transaction) => {
 
             /*
-            ---------------------------------------------
-            READ ORDER
-            ---------------------------------------------
+            =================================================
+            1. READ ORDER
+            =================================================
             */
 
             const orderSnap =
@@ -208,7 +376,9 @@ async function settleMarketplaceOrder({
                 );
 
 
-            if (!orderSnap.exists) {
+            if (
+                !orderSnap.exists
+            ) {
 
                 throw new Error(
                     "Marketplace order not found."
@@ -222,39 +392,128 @@ async function settleMarketplaceOrder({
 
 
             /*
-            ---------------------------------------------
-            VERIFY SELLER
-            ---------------------------------------------
+            =================================================
+            2. FIND SELLER PORTION
+            =================================================
             */
 
+            const sellerBreakdown =
+                getSellerBreakdown(
+                    order,
+                    sellerId
+                );
+
+
             if (
-                order.sellerId !==
-                sellerId
+                !sellerBreakdown
             ) {
 
                 throw new Error(
-                    "Seller is not authorized to settle this order."
+                    "Seller is not part of this order."
                 );
 
             }
 
 
             /*
-            ---------------------------------------------
-            IDEMPOTENCY CHECK
-            ---------------------------------------------
+            =================================================
+            3. PAYMENT
+            =================================================
             */
 
             if (
-                order.settlementStatus ===
-                "SETTLED"
+                normalizeStatus(
+                    order.paymentStatus
+                ) !==
+                normalizeStatus(
+                    PAYMENT_STATUS.COMPLETED
+                )
+            ) {
+
+                throw new Error(
+                    "Order payment has not been completed."
+                );
+
+            }
+
+
+            /*
+            =================================================
+            4. ORDER
+            =================================================
+            */
+
+            if (
+                normalizeStatus(
+                    order.status
+                ) !==
+                normalizeStatus(
+                    ORDER_STATUS.COMPLETED
+                )
+            ) {
+
+                throw new Error(
+                    "Order must be completed before settlement."
+                );
+
+            }
+
+
+            /*
+            =================================================
+            5. SELLER MUST STILL BE HELD
+            =================================================
+            */
+
+            const sellerPaymentStatus =
+                normalizeStatus(
+                    sellerBreakdown.sellerPaymentStatus
+                );
+
+
+            const sellerPayoutStatus =
+                normalizeStatus(
+                    sellerBreakdown.payoutStatus
+                );
+
+
+            /*
+            =================================================
+            6. IDEMPOTENCY
+
+            This is IMPORTANT.
+
+            A repeated callback, repeated API request, or
+            repeated seller verification must NEVER credit
+            the seller twice.
+
+            We use the seller's payout status.
+            =================================================
+            */
+
+            if (
+
+                sellerPaymentStatus ===
+                    normalizeStatus(
+                        SELLER_PAYMENT_STATUS.RELEASED
+                    )
+
+                ||
+
+                sellerPayoutStatus ===
+                    normalizeStatus(
+                        PAYOUT_STATUS.COMPLETED
+                    )
+
             ) {
 
                 result = {
 
-                    success: true,
+                    success:
+                        true,
 
-                    alreadySettled: true,
+                    alreadySettled:
+                        true,
 
                     orderId,
 
@@ -262,7 +521,12 @@ async function settleMarketplaceOrder({
 
                     sellerAmount:
                         toMoney(
-                            order.sellerPayoutAmount
+                            sellerBreakdown.sellerNet
+                        ),
+
+                    commissionAmount:
+                        toMoney(
+                            sellerBreakdown.commissionAmount
                         ),
 
                     status:
@@ -276,81 +540,76 @@ async function settleMarketplaceOrder({
 
 
             /*
-            ---------------------------------------------
-            PAYMENT MUST BE COMPLETED
-            ---------------------------------------------
+            =================================================
+            7. SELLER FUNDS MUST BE HELD
+            =================================================
             */
 
             if (
-                order.paymentStatus !==
-                PAYMENT_STATUS.COMPLETED
+                sellerPaymentStatus !==
+                normalizeStatus(
+                    SELLER_PAYMENT_STATUS.HELD
+                )
             ) {
 
                 throw new Error(
-                    "Order payment has not been completed."
+                    "Seller funds are not currently in HELD state."
                 );
 
             }
 
 
             /*
-            ---------------------------------------------
-            ORDER MUST BE COMPLETED
-            ---------------------------------------------
+            =================================================
+            8. GET AUTHORITATIVE AMOUNTS
+            =================================================
             */
 
-            if (
-                order.status !==
-                ORDER_STATUS.COMPLETED
-            ) {
-
-                throw new Error(
-                    "Order must be completed before settlement."
-                );
-
-            }
-
-
-            /*
-            ---------------------------------------------
-            FUNDS MUST STILL BE HELD
-            ---------------------------------------------
-            */
-
-            if (
-                order.sellerPaymentStatus !==
-                SELLER_PAYMENT_STATUS.HELD
-            ) {
-
-                throw new Error(
-                    "Seller funds are not in HELD state."
-                );
-
-            }
-
-
-            /*
-            ---------------------------------------------
-            AUTHORITATIVE SELLER AMOUNT
-            ---------------------------------------------
-            */
-
-            const sellerAmount =
+            const sellerGross =
                 toMoney(
-                    order.sellerNet
+                    sellerBreakdown.grossAmount ||
+                    sellerBreakdown.sellerGross
                 );
 
 
             const commissionAmount =
                 toMoney(
-                    order.commissionAmount
+                    sellerBreakdown.commissionAmount
                 );
 
 
-            const buyerTotal =
+            const sellerAmount =
                 toMoney(
-                    order.buyerTotal
+                    sellerBreakdown.sellerNet
                 );
+
+
+            /*
+            =================================================
+            9. FINANCIAL VALIDATION
+            =================================================
+            */
+
+            if (
+                sellerGross <= 0
+            ) {
+
+                throw new Error(
+                    "Invalid seller gross amount."
+                );
+
+            }
+
+
+            if (
+                commissionAmount < 0
+            ) {
+
+                throw new Error(
+                    "Invalid commission amount."
+                );
+
+            }
 
 
             if (
@@ -364,103 +623,191 @@ async function settleMarketplaceOrder({
             }
 
 
-            /*
-            ---------------------------------------------
-            READ WALLET
-            ---------------------------------------------
-            */
-
-            const walletSnap =
-                await transaction.get(
-                    walletRef
-                );
-
-
-            const wallet =
-                walletSnap.exists
-                    ? walletSnap.data()
-                    : {};
-
-
-            const availableBalance =
+            const calculatedNet =
                 toMoney(
-                    wallet.availableBalance
+                    sellerGross -
+                    commissionAmount
                 );
 
-
-            const pendingBalance =
-                toMoney(
-                    wallet.pendingBalance
-                );
-
-
-            const totalEarned =
-                toMoney(
-                    wallet.totalEarned
-                );
-
-
-            /*
-            ---------------------------------------------
-            VERIFY HELD MONEY
-            ---------------------------------------------
-
-            Payment processing should have already moved
-            seller funds into pendingBalance.
-
-            Therefore settlement must NEVER create money
-            out of nowhere.
-            ---------------------------------------------
-            */
 
             if (
-                pendingBalance <
+                calculatedNet !==
                 sellerAmount
             ) {
 
                 throw new Error(
-                    `Insufficient held seller funds. Pending balance: KES ${pendingBalance}, required: KES ${sellerAmount}.`
+                    `Seller settlement mismatch. Gross: ${sellerGross}, Commission: ${commissionAmount}, Net: ${sellerAmount}.`
                 );
 
             }
 
 
             /*
-            ---------------------------------------------
-            NEW WALLET BALANCES
-            ---------------------------------------------
+            =================================================
+            10. READ SELLER WALLET
+            =================================================
             */
 
-            const newPendingBalance =
+            const sellerWalletSnap =
+                await transaction.get(
+                    sellerWalletRef
+                );
+
+
+            const sellerWallet =
+                sellerWalletSnap.exists
+                    ? sellerWalletSnap.data()
+                    : {};
+
+
+            const sellerAvailableBalance =
                 toMoney(
-                    pendingBalance -
+                    sellerWallet.availableBalance
+                );
+
+
+            const sellerPendingBalance =
+                toMoney(
+                    sellerWallet.pendingBalance
+                );
+
+
+            const sellerTotalEarned =
+                toMoney(
+                    sellerWallet.totalEarned
+                );
+
+
+            /*
+            =================================================
+            11. VERIFY HELD BALANCE
+            =================================================
+
+            IMPORTANT:
+
+            The payment processing stage must have placed
+            sellerNet into pendingBalance.
+
+            Settlement cannot create money.
+
+            =================================================
+            */
+
+            if (
+                sellerPendingBalance <
+                sellerAmount
+            ) {
+
+                throw new Error(
+
+                    `Insufficient held seller funds. ` +
+                    `Pending: KES ${sellerPendingBalance}. ` +
+                    `Required: KES ${sellerAmount}.`
+
+                );
+
+            }
+
+
+            /*
+            =================================================
+            12. READ COMPANY WALLET
+            =================================================
+            */
+
+            const companyWalletSnap =
+                await transaction.get(
+                    companyWalletRef
+                );
+
+
+            const companyWallet =
+                companyWalletSnap.exists
+                    ? companyWalletSnap.data()
+                    : {};
+
+
+            const companyAvailableBalance =
+                toMoney(
+                    companyWallet.availableBalance
+                );
+
+
+            const companyTotalCommission =
+                toMoney(
+                    companyWallet.totalCommission
+                );
+
+
+            const companyTotalRevenue =
+                toMoney(
+                    companyWallet.totalRevenue
+                );
+
+
+            /*
+            =================================================
+            13. NEW SELLER BALANCES
+            =================================================
+            */
+
+            const newSellerPending =
+                toMoney(
+                    sellerPendingBalance -
                     sellerAmount
                 );
 
 
-            const newAvailableBalance =
+            const newSellerAvailable =
                 toMoney(
-                    availableBalance +
+                    sellerAvailableBalance +
                     sellerAmount
                 );
 
 
-            const newTotalEarned =
+            const newSellerTotalEarned =
                 toMoney(
-                    totalEarned +
+                    sellerTotalEarned +
                     sellerAmount
                 );
 
 
             /*
-            ---------------------------------------------
-            UPDATE SELLER WALLET
-            ---------------------------------------------
+            =================================================
+            14. NEW COMPANY BALANCE
+            =================================================
+            */
+
+            const newCompanyAvailable =
+                toMoney(
+                    companyAvailableBalance +
+                    commissionAmount
+                );
+
+
+            const newCompanyCommission =
+                toMoney(
+                    companyTotalCommission +
+                    commissionAmount
+                );
+
+
+            const newCompanyRevenue =
+                toMoney(
+                    companyTotalRevenue +
+                    commissionAmount
+                );
+
+
+            /*
+            =================================================
+            15. UPDATE SELLER WALLET
+            =================================================
             */
 
             transaction.set(
 
-                walletRef,
+                sellerWalletRef,
 
                 {
 
@@ -468,13 +815,13 @@ async function settleMarketplaceOrder({
                         sellerId,
 
                     availableBalance:
-                        newAvailableBalance,
+                        newSellerAvailable,
 
                     pendingBalance:
-                        newPendingBalance,
+                        newSellerPending,
 
                     totalEarned:
-                        newTotalEarned,
+                        newSellerTotalEarned,
 
                     updatedAt:
                         FieldValue.serverTimestamp(),
@@ -489,115 +836,184 @@ async function settleMarketplaceOrder({
 
 
             /*
-            ---------------------------------------------
-            CREATE SELLER SETTLEMENT TRANSACTION
-            ---------------------------------------------
+            =================================================
+            16. UPDATE COMPANY WALLET
+            =================================================
             */
-
-            const settlementRef =
-                db
-                    .collection(
-                        COLLECTIONS.TRANSACTIONS
-                    )
-                    .doc();
-
 
             transaction.set(
 
-                settlementRef,
+                companyWalletRef,
 
                 {
 
-                    transactionId:
-                        settlementRef.id,
+                    walletId:
+                        COMPANY_WALLET_ID,
 
-                    type:
-                        TRANSACTION_TYPES.SELLER_PAYOUT,
+                    name:
+                        "BIASHNET Company Wallet",
 
-                    orderId,
+                    availableBalance:
+                        newCompanyAvailable,
 
-                    sellerId,
+                    totalCommission:
+                        newCompanyCommission,
 
-                    buyerId:
-                        order.buyerId ||
-                        null,
-
-                    paymentId:
-                        order.paymentId ||
-                        null,
-
-                    amount:
-                        sellerAmount,
-
-                    saleAmount:
-                        buyerTotal,
-
-                    commissionAmount,
+                    totalRevenue:
+                        newCompanyRevenue,
 
                     currency:
                         "KES",
 
-                    status:
-                        PAYMENT_STATUS.COMPLETED,
-
-                    payoutStatus:
-                        PAYOUT_STATUS.COMPLETED,
-
-                    direction:
-                        "CREDIT",
-
-                    source:
-                        "MARKETPLACE_ORDER",
-
-                    description:
-                        `Seller settlement for order ${orderId}`,
-
-                    createdAt:
+                    updatedAt:
                         FieldValue.serverTimestamp(),
 
-                    completedAt:
-                        FieldValue.serverTimestamp(),
+                },
 
+                {
+                    merge: true
                 }
 
             );
 
 
             /*
-            ---------------------------------------------
-            COMPANY COMMISSION LEDGER
-            ---------------------------------------------
+            =================================================
+            17. BUILD UPDATED SELLER BREAKDOWN
+            =================================================
             */
 
+            const updatedSellerBreakdown =
+                order.sellerBreakdown.map(
+                    seller => {
+
+                        if (
+                            seller.sellerId !==
+                            sellerId
+                        ) {
+
+                            return seller;
+
+                        }
+
+
+                        return {
+
+                            ...seller,
+
+                            sellerPaymentStatus:
+                                SELLER_PAYMENT_STATUS.RELEASED,
+
+                            payoutStatus:
+                                PAYOUT_STATUS.COMPLETED,
+
+                            settlementStatus:
+                                "SETTLED",
+
+                            sellerPayoutAmount:
+                                sellerAmount,
+
+                            commissionSettled:
+                                commissionAmount,
+
+                            settledAt:
+                                FieldValue.serverTimestamp(),
+
+                        };
+
+                    }
+                );
+
+
+            /*
+            =================================================
+            18. CHECK WHETHER ALL SELLERS ARE SETTLED
+            =================================================
+            */
+
+            const allSellersSettled =
+                updatedSellerBreakdown.every(
+                    seller => {
+
+                        const status =
+                            normalizeStatus(
+                                seller.sellerPaymentStatus
+                            );
+
+                        const payout =
+                            normalizeStatus(
+                                seller.payoutStatus
+                            );
+
+                        return (
+
+                            status ===
+                            normalizeStatus(
+                                SELLER_PAYMENT_STATUS.RELEASED
+                            )
+
+                            &&
+
+                            payout ===
+                            normalizeStatus(
+                                PAYOUT_STATUS.COMPLETED
+                            )
+
+                        );
+
+                    }
+                );
+
+
+            /*
+            =================================================
+            19. CREATE SELLER LEDGER TRANSACTION
+            =================================================
+
+            Deterministic ID prevents duplicate ledger
+            entries when the same seller settlement is
+            accidentally retried.
+
+            =================================================
+            */
+
+            const sellerTransactionId =
+                `SETTLEMENT_${orderId}_${sellerId}`;
+
+
+            const sellerTransactionRef =
+                db
+                    .collection(
+                        COLLECTIONS.TRANSACTIONS
+                    )
+                    .doc(
+                        sellerTransactionId
+                    );
+
+
+            const existingSellerTransaction =
+                await transaction.get(
+                    sellerTransactionRef
+                );
+
+
             if (
-                commissionAmount > 0
+                !existingSellerTransaction.exists
             ) {
 
-                const commissionRef =
-                    db
-                        .collection(
-                            COLLECTIONS.TRANSACTIONS
-                        )
-                        .doc();
+                transaction.create(
 
-
-                transaction.set(
-
-                    commissionRef,
+                    sellerTransactionRef,
 
                     {
 
                         transactionId:
-                            commissionRef.id,
+                            sellerTransactionId,
 
                         type:
-                            TRANSACTION_TYPES.COMMISSION,
+                            TRANSACTION_TYPES.SELLER_PAYOUT,
 
                         orderId,
-
-                        paymentId:
-                            order.paymentId ||
-                            null,
 
                         sellerId,
 
@@ -605,8 +1021,17 @@ async function settleMarketplaceOrder({
                             order.buyerId ||
                             null,
 
+                        paymentId:
+                            order.paymentId ||
+                            null,
+
                         amount:
-                            commissionAmount,
+                            sellerAmount,
+
+                        saleAmount:
+                            sellerGross,
+
+                        commissionAmount,
 
                         currency:
                             "KES",
@@ -614,19 +1039,22 @@ async function settleMarketplaceOrder({
                         status:
                             PAYMENT_STATUS.COMPLETED,
 
+                        payoutStatus:
+                            PAYOUT_STATUS.COMPLETED,
+
                         direction:
                             "CREDIT",
-
-                        recipient:
-                            "BIASHNET",
 
                         source:
                             "MARKETPLACE_ORDER",
 
                         description:
-                            `Biashnet commission for order ${orderId}`,
+                            `Seller settlement for order ${orderId}`,
 
                         createdAt:
+                            FieldValue.serverTimestamp(),
+
+                        completedAt:
                             FieldValue.serverTimestamp(),
 
                     }
@@ -637,77 +1065,227 @@ async function settleMarketplaceOrder({
 
 
             /*
-            ---------------------------------------------
-            UPDATE ORDER
-            ---------------------------------------------
+            =================================================
+            20. CREATE COMPANY COMMISSION LEDGER
+            =================================================
             */
 
-            transaction.update(
+            let commissionTransactionId = null;
 
-                orderRef,
 
-                {
+            if (
+                commissionAmount > 0
+            ) {
 
-                    sellerPaymentStatus:
-                        SELLER_PAYMENT_STATUS.RELEASED,
+                commissionTransactionId =
+                    `COMMISSION_${orderId}_${sellerId}`;
 
-                    payoutStatus:
-                        PAYOUT_STATUS.COMPLETED,
 
-                    sellerPayoutAmount:
-                        sellerAmount,
+                const commissionTransactionRef =
+                    db
+                        .collection(
+                            COLLECTIONS.TRANSACTIONS
+                        )
+                        .doc(
+                            commissionTransactionId
+                        );
 
-                    commissionSettled:
-                        commissionAmount,
 
-                    settlementStatus:
-                        "SETTLED",
+                const existingCommissionTransaction =
+                    await transaction.get(
+                        commissionTransactionRef
+                    );
 
-                    settlementTransactionId:
-                        settlementRef.id,
 
-                    settledAt:
-                        FieldValue.serverTimestamp(),
+                if (
+                    !existingCommissionTransaction.exists
+                ) {
 
-                    fundsHeld:
-                        false,
+                    transaction.create(
 
-                    fundsReleased:
-                        true,
+                        commissionTransactionRef,
 
-                    updatedAt:
-                        FieldValue.serverTimestamp(),
+                        {
+
+                            transactionId:
+                                commissionTransactionId,
+
+                            type:
+                                TRANSACTION_TYPES.COMMISSION_SETTLEMENT,
+
+                            orderId,
+
+                            sellerId,
+
+                            buyerId:
+                                order.buyerId ||
+                                null,
+
+                            paymentId:
+                                order.paymentId ||
+                                null,
+
+                            amount:
+                                commissionAmount,
+
+                            currency:
+                                "KES",
+
+                            status:
+                                PAYMENT_STATUS.COMPLETED,
+
+                            direction:
+                                "CREDIT",
+
+                            recipient:
+                                "BIASHNET",
+
+                            wallet:
+                                "COMPANY_WALLET",
+
+                            source:
+                                "MARKETPLACE_ORDER",
+
+                            description:
+                                `BIASHNET commission for order ${orderId}`,
+
+                            createdAt:
+                                FieldValue.serverTimestamp(),
+
+                        }
+
+                    );
 
                 }
 
+            }
+
+
+            /*
+            =================================================
+            21. UPDATE ORDER
+            =================================================
+
+            IMPORTANT:
+
+            We update ONLY this seller's portion.
+
+            Other sellers remain HELD until their own
+            completion verification occurs.
+
+            =================================================
+            */
+
+            const orderUpdate = {
+
+                sellerBreakdown:
+                    updatedSellerBreakdown,
+
+                updatedAt:
+                    FieldValue.serverTimestamp(),
+
+            };
+
+
+            /*
+            =================================================
+            IF ALL SELLERS ARE SETTLED
+            =================================================
+            */
+
+            if (
+                allSellersSettled
+            ) {
+
+                orderUpdate.fundsHeld =
+                    false;
+
+                orderUpdate.fundsReleased =
+                    true;
+
+                orderUpdate.sellerPaymentStatus =
+                    SELLER_PAYMENT_STATUS.RELEASED;
+
+                orderUpdate.payoutStatus =
+                    PAYOUT_STATUS.COMPLETED;
+
+                orderUpdate.settlementStatus =
+                    "SETTLED";
+
+                orderUpdate.settledAt =
+                    FieldValue.serverTimestamp();
+
+            } else {
+
+                /*
+                ------------------------------------------------
+                SOME SELLERS STILL HELD
+                ------------------------------------------------
+                */
+
+                orderUpdate.fundsHeld =
+                    true;
+
+                orderUpdate.fundsReleased =
+                    false;
+
+                orderUpdate.settlementStatus =
+                    "PARTIALLY_SETTLED";
+
+            }
+
+
+            transaction.update(
+                orderRef,
+                orderUpdate
             );
 
 
             /*
-            ---------------------------------------------
-            RESULT
-            ---------------------------------------------
+            =================================================
+            22. RESULT
+            =================================================
             */
 
             result = {
 
-                success: true,
+                success:
+                    true,
 
-                alreadySettled: false,
+                alreadySettled:
+                    false,
 
                 orderId,
 
                 sellerId,
 
                 saleAmount:
-                    buyerTotal,
+                    sellerGross,
 
                 commissionAmount,
 
                 sellerAmount,
 
+                sellerPendingBalance:
+                    newSellerPending,
+
+                sellerAvailableBalance:
+                    newSellerAvailable,
+
+                companyWalletCredit:
+                    commissionAmount,
+
+                companyAvailableBalance:
+                    newCompanyAvailable,
+
+                allSellersSettled,
+
                 status:
                     "SETTLED",
+
+                sellerTransactionId,
+
+                commissionTransactionId,
 
             };
 
@@ -715,12 +1293,18 @@ async function settleMarketplaceOrder({
     );
 
 
+    /*
+    =======================================================
+    LOG
+    =======================================================
+    */
+
     console.log(
         "=========================================="
     );
 
     console.log(
-        "✅ MARKETPLACE SETTLEMENT COMPLETE"
+        "✅ BIASHNET SELLER SETTLEMENT COMPLETE"
     );
 
     console.log(
@@ -761,11 +1345,15 @@ async function getSettlementStatus(
             .collection(
                 COLLECTIONS.ORDERS
             )
-            .doc(orderId)
+            .doc(
+                orderId
+            )
             .get();
 
 
-    if (!orderSnap.exists) {
+    if (
+        !orderSnap.exists
+    ) {
 
         return null;
 
@@ -776,11 +1364,70 @@ async function getSettlementStatus(
         orderSnap.data();
 
 
+    const sellerBreakdown =
+        Array.isArray(
+            order.sellerBreakdown
+        )
+            ? order.sellerBreakdown
+            : [];
+
+
+    const sellers =
+        sellerBreakdown.map(
+            seller => ({
+
+                sellerId:
+                    seller.sellerId,
+
+                sellerName:
+                    seller.sellerName ||
+                    null,
+
+                grossAmount:
+                    toMoney(
+                        seller.grossAmount
+                    ),
+
+                commissionAmount:
+                    toMoney(
+                        seller.commissionAmount
+                    ),
+
+                sellerNet:
+                    toMoney(
+                        seller.sellerNet
+                    ),
+
+                sellerPaymentStatus:
+                    seller.sellerPaymentStatus ||
+                    null,
+
+                payoutStatus:
+                    seller.payoutStatus ||
+                    null,
+
+                settlementStatus:
+                    seller.settlementStatus ||
+                    "NOT_SETTLED",
+
+                sellerPayoutAmount:
+                    toMoney(
+                        seller.sellerPayoutAmount
+                    ),
+
+                settledAt:
+                    seller.settledAt ||
+                    null,
+
+            })
+        );
+
+
     return {
 
         orderId,
 
-        status:
+        orderStatus:
             order.status ||
             null,
 
@@ -788,36 +1435,136 @@ async function getSettlementStatus(
             order.paymentStatus ||
             null,
 
-        sellerPaymentStatus:
-            order.sellerPaymentStatus ||
-            null,
-
-        payoutStatus:
-            order.payoutStatus ||
-            null,
-
-        settlementStatus:
-            order.settlementStatus ||
-            "NOT_SETTLED",
-
-        sellerPayoutAmount:
-            toMoney(
-                order.sellerPayoutAmount
-            ),
-
-        commissionSettled:
-            toMoney(
-                order.commissionSettled
-            ),
-
         fundsHeld:
             order.fundsHeld === true,
 
         fundsReleased:
             order.fundsReleased === true,
 
+        settlementStatus:
+            order.settlementStatus ||
+            "NOT_SETTLED",
+
         settledAt:
             order.settledAt ||
+            null,
+
+        sellers,
+
+    };
+
+}
+
+
+/*
+=========================================================
+GET SELLER SETTLEMENT
+=========================================================
+*/
+
+async function getSellerSettlement(
+    orderId,
+    sellerId
+) {
+
+    if (!orderId) {
+
+        throw new Error(
+            "Order ID is required."
+        );
+
+    }
+
+
+    if (!sellerId) {
+
+        throw new Error(
+            "Seller ID is required."
+        );
+
+    }
+
+
+    const orderSnap =
+        await db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .doc(
+                orderId
+            )
+            .get();
+
+
+    if (
+        !orderSnap.exists
+    ) {
+
+        return null;
+
+    }
+
+
+    const order =
+        orderSnap.data();
+
+
+    const seller =
+        getSellerBreakdown(
+            order,
+            sellerId
+        );
+
+
+    if (
+        !seller
+    ) {
+
+        return null;
+
+    }
+
+
+    return {
+
+        orderId,
+
+        sellerId,
+
+        grossAmount:
+            toMoney(
+                seller.grossAmount
+            ),
+
+        commissionAmount:
+            toMoney(
+                seller.commissionAmount
+            ),
+
+        sellerNet:
+            toMoney(
+                seller.sellerNet
+            ),
+
+        sellerPaymentStatus:
+            seller.sellerPaymentStatus ||
+            null,
+
+        payoutStatus:
+            seller.payoutStatus ||
+            null,
+
+        settlementStatus:
+            seller.settlementStatus ||
+            "NOT_SETTLED",
+
+        sellerPayoutAmount:
+            toMoney(
+                seller.sellerPayoutAmount
+            ),
+
+        settledAt:
+            seller.settledAt ||
             null,
 
     };
@@ -836,5 +1583,7 @@ module.exports = {
     settleMarketplaceOrder,
 
     getSettlementStatus,
+
+    getSellerSettlement,
 
 };

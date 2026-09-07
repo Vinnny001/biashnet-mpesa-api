@@ -3,52 +3,271 @@ const { db } = require("../config/firebase");
 
 /*
 =========================================================
-DEFAULT COMMISSION
+BIASHNET COMMISSION SERVICE
+=========================================================
+
+PURPOSE
+---------------------------------------------------------
+
+Determines BIASHNET marketplace commission.
+
+DESIGN PRINCIPLE
+---------------------------------------------------------
+
+BIASHNET intentionally keeps seller commissions LOW.
+
+The objective is:
+
+- attract sellers
+- increase product supply
+- encourage repeat selling
+- make BIASHNET more attractive than high-fee marketplaces
+- keep pricing transparent
+
+IMPORTANT
+
+This service calculates commission only.
+
+It does NOT:
+
+- credit seller wallets
+- credit company wallet
+- create transactions
+- process payments
+- process withdrawals
+
+Those responsibilities belong to:
+
+paymentService
+settlementService
+transactionService
+wallet services
+
+=========================================================
+LAUNCH COMMISSION MODEL
+=========================================================
+
+PRODUCT CATEGORIES
+
+Phones        5%
+Electronics   5%
+Laptops       5%
+Food          5%
+Books         5%
+Vehicles      5%
+
+Fashion       6%
+Shoes         6%
+Beauty        6%
+Accessories   6%
+General       6%
+
+Services      8%
+Housing       8%
+
+=========================================================
+IMPORTANT
+=========================================================
+
+The rate used during checkout becomes part of the
+server-side financial snapshot.
+
+Therefore changing the commission settings later does
+NOT change historical orders.
+
 =========================================================
 */
-
-const DEFAULT_COMMISSION_RATE = 0.15;
 
 
 /*
 =========================================================
-CATEGORY COMMISSION TABLE
+DEFAULT
+=========================================================
+*/
 
-Rates are decimals:
+const DEFAULT_COMMISSION_RATE = 0.06;
 
-10% = 0.10
-15% = 0.15
-20% = 0.20
+
+/*
+=========================================================
+MAXIMUM COMMISSION SAFETY
+=========================================================
+
+BIASHNET should never accidentally charge an extreme
+percentage because of a bad Firestore configuration.
+
+The marketplace commission configuration must therefore
+stay within this upper limit.
+
+=========================================================
+*/
+
+const MAX_COMMISSION_RATE = 0.10;
+
+
+/*
+=========================================================
+LAUNCH CATEGORY RATES
 =========================================================
 */
 
 const COMMISSION_RATES = {
 
-    electronics: 0.10,
+    phones:
+        0.04,
 
-    phones: 0.10,
+    electronics:
+        0.04,
 
-    laptops: 0.10,
+    laptops:
+        0.04,
 
-    fashion: 0.12,
+    food:
+        0.03,
 
-    shoes: 0.12,
+    books:
+        0.05,
 
-    food: 0.10,
+    vehicles:
+        0.05,
 
-    beauty: 0.12,
+    fashion:
+        0.06,
 
-    services: 0.15,
+    shoes:
+        0.05,
 
-    housing: 0.20,
+    beauty:
+        0.04,
 
-    vehicles: 0.10,
+    accessories:
+        0.04,
 
-    accessories: 0.12,
+    general:
+        0.04,
 
-    books: 0.10,
+    services:
+        0.08,
 
-    general: 0.15,
+    housing:
+        0.08,
+
+};
+
+
+/*
+=========================================================
+CATEGORY ALIASES
+=========================================================
+
+Handles variations from existing product data.
+
+Example:
+
+"Fashion"
+"fashion"
+"fashion products"
+
+=========================================================
+*/
+
+const CATEGORY_ALIASES = {
+
+    phone:
+        "phones",
+
+    mobile:
+        "phones",
+
+    mobile_phone:
+        "phones",
+
+    mobile_phones:
+        "phones",
+
+    smartphones:
+        "phones",
+
+    smartphone:
+        "phones",
+
+    electronics:
+        "electronics",
+
+    electronic:
+        "electronics",
+
+    laptop:
+        "laptops",
+
+    computers:
+        "laptops",
+
+    computer:
+        "laptops",
+
+    clothes:
+        "fashion",
+
+    clothing:
+        "fashion",
+
+    fashion_products:
+        "fashion",
+
+    shoes:
+        "shoes",
+
+    footwear:
+        "shoes",
+
+    beauty:
+        "beauty",
+
+    cosmetics:
+        "beauty",
+
+    accessory:
+        "accessories",
+
+    accessories:
+        "accessories",
+
+    food:
+        "food",
+
+    groceries:
+        "food",
+
+    book:
+        "books",
+
+    books:
+        "books",
+
+    car:
+        "vehicles",
+
+    cars:
+        "vehicles",
+
+    vehicle:
+        "vehicles",
+
+    services:
+        "services",
+
+    service:
+        "services",
+
+    housing:
+        "housing",
+
+    house:
+        "housing",
+
+    houses:
+        "housing",
 
 };
 
@@ -61,14 +280,161 @@ NORMALIZE CATEGORY
 
 function normalizeCategory(category) {
 
-    if (!category) {
+    if (
+        category === undefined ||
+        category === null
+    ) {
+
         return "general";
+
     }
 
-    return String(category)
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, "_");
+
+    const raw =
+        String(category)
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, "_");
+
+
+    if (!raw) {
+
+        return "general";
+
+    }
+
+
+    return (
+        CATEGORY_ALIASES[raw] ||
+        raw
+    );
+
+}
+
+
+/*
+=========================================================
+VALIDATE RATE
+=========================================================
+*/
+
+function isValidRate(
+    value
+) {
+
+    const rate =
+        Number(value);
+
+
+    return (
+        Number.isFinite(rate) &&
+        rate >= 0 &&
+        rate <= MAX_COMMISSION_RATE
+    );
+
+}
+
+
+/*
+=========================================================
+FIRESTORE COMMISSION SETTINGS
+=========================================================
+
+Document:
+
+marketplaceSettings/commissions
+
+Example:
+
+{
+    phones: 0.05,
+    electronics: 0.05,
+    fashion: 0.06,
+    services: 0.08
+}
+
+=========================================================
+*/
+
+async function getConfiguredCommissionRate(
+    category
+) {
+
+    try {
+
+        const ref =
+            db
+                .collection(
+                    "marketplaceSettings"
+                )
+                .doc(
+                    "commissions"
+                );
+
+
+        const snapshot =
+            await ref.get();
+
+
+        if (
+            !snapshot.exists
+        ) {
+
+            return null;
+
+        }
+
+
+        const settings =
+            snapshot.data() || {};
+
+
+        const configuredRate =
+            settings[category];
+
+
+        if (
+            configuredRate === undefined
+        ) {
+
+            return null;
+
+        }
+
+
+        if (
+            !isValidRate(
+                configuredRate
+            )
+        ) {
+
+            console.error(
+
+                `Invalid BIASHNET commission rate for category ${category}:`,
+
+                configuredRate
+
+            );
+
+            return null;
+
+        }
+
+
+        return Number(
+            configuredRate
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Commission settings lookup failed:",
+            error
+        );
+
+        return null;
+
+    }
 
 }
 
@@ -79,92 +445,61 @@ GET COMMISSION RATE
 =========================================================
 */
 
-async function getCommissionRate(category) {
+async function getCommissionRate(
+    category
+) {
 
     const normalizedCategory =
-        normalizeCategory(category);
+        normalizeCategory(
+            category
+        );
 
 
     /*
     -----------------------------------------------------
-    OPTIONAL FIRESTORE OVERRIDE
-    -----------------------------------------------------
-
-    marketplaceSettings/commissions
-
-    Example:
-
-    {
-        electronics: 0.10,
-        fashion: 0.12,
-        services: 0.15
-    }
-
+    FIRESTORE OVERRIDE
     -----------------------------------------------------
     */
 
-    try {
-
-        const settingsRef =
-            db
-                .collection("marketplaceSettings")
-                .doc("commissions");
-
-
-        const settingsSnap =
-            await settingsRef.get();
-
-
-        if (settingsSnap.exists) {
-
-            const settings =
-                settingsSnap.data();
-
-
-            const configuredRate =
-                settings[normalizedCategory];
-
-
-            if (
-                configuredRate !== undefined &&
-                Number.isFinite(
-                    Number(configuredRate)
-                ) &&
-                Number(configuredRate) >= 0 &&
-                Number(configuredRate) <= 1
-            ) {
-
-                return Number(
-                    configuredRate
-                );
-
-            }
-
-        }
-
-    } catch (error) {
-
-        console.error(
-            "Commission settings lookup failed:",
-            error
+    const configuredRate =
+        await getConfiguredCommissionRate(
+            normalizedCategory
         );
 
-        /*
-        -------------------------------------------------
-        We intentionally fall back to the backend
-        default instead of stopping an order.
-        -------------------------------------------------
-        */
+
+    if (
+        configuredRate !== null
+    ) {
+
+        return configuredRate;
 
     }
 
 
-    return (
+    /*
+    -----------------------------------------------------
+    CODE DEFAULT
+    -----------------------------------------------------
+    */
+
+    const categoryRate =
         COMMISSION_RATES[
             normalizedCategory
-        ] ??
-        DEFAULT_COMMISSION_RATE
-    );
+        ];
+
+
+    if (
+        isValidRate(
+            categoryRate
+        )
+    ) {
+
+        return categoryRate;
+
+    }
+
+
+    return DEFAULT_COMMISSION_RATE;
 
 }
 
@@ -176,16 +511,27 @@ CALCULATE COMMISSION
 */
 
 async function calculateCommission({
+
     amount,
+
     category,
+
 }) {
 
     const saleAmount =
         Number(amount);
 
 
+    /*
+    -----------------------------------------------------
+    SALE VALIDATION
+    -----------------------------------------------------
+    */
+
     if (
-        !Number.isFinite(saleAmount) ||
+        !Number.isFinite(
+            saleAmount
+        ) ||
         saleAmount <= 0
     ) {
 
@@ -196,11 +542,35 @@ async function calculateCommission({
     }
 
 
-    const commissionRate =
-        await getCommissionRate(
+    /*
+    -----------------------------------------------------
+    CATEGORY
+    -----------------------------------------------------
+    */
+
+    const normalizedCategory =
+        normalizeCategory(
             category
         );
 
+
+    /*
+    -----------------------------------------------------
+    RATE
+    -----------------------------------------------------
+    */
+
+    const commissionRate =
+        await getCommissionRate(
+            normalizedCategory
+        );
+
+
+    /*
+    -----------------------------------------------------
+    COMMISSION
+    -----------------------------------------------------
+    */
 
     const commissionAmount =
         Number(
@@ -211,7 +581,13 @@ async function calculateCommission({
         );
 
 
-    const sellerGross =
+    /*
+    -----------------------------------------------------
+    SELLER NET
+    -----------------------------------------------------
+    */
+
+    const sellerNet =
         Number(
             (
                 saleAmount -
@@ -220,19 +596,102 @@ async function calculateCommission({
         );
 
 
+    /*
+    -----------------------------------------------------
+    FINANCIAL SAFETY
+    -----------------------------------------------------
+    */
+
+    if (
+        commissionAmount < 0
+    ) {
+
+        throw new Error(
+            "Commission cannot be negative."
+        );
+
+    }
+
+
+    if (
+        commissionAmount >
+        saleAmount
+    ) {
+
+        throw new Error(
+            "Commission cannot exceed sale amount."
+        );
+
+    }
+
+
+    if (
+        sellerNet < 0
+    ) {
+
+        throw new Error(
+            "Seller net cannot be negative."
+        );
+
+    }
+
+
+    /*
+    -----------------------------------------------------
+    BALANCE CHECK
+    -----------------------------------------------------
+    */
+
+    const calculatedTotal =
+        Number(
+            (
+                commissionAmount +
+                sellerNet
+            ).toFixed(2)
+        );
+
+
+    if (
+        Math.abs(
+            calculatedTotal -
+            saleAmount
+        ) > 0.01
+    ) {
+
+        throw new Error(
+            "Commission calculation does not balance."
+        );
+
+    }
+
+
+    /*
+    -----------------------------------------------------
+    RESULT
+    -----------------------------------------------------
+    */
+
     return {
 
         category:
-            normalizeCategory(category),
+            normalizedCategory,
 
         commissionRate,
 
         commissionPercentage:
-            commissionRate * 100,
+            Number(
+                (
+                    commissionRate *
+                    100
+                ).toFixed(2)
+            ),
 
         commissionAmount,
 
-        sellerGross,
+        sellerGross:
+            saleAmount,
+
+        sellerNet,
 
         saleAmount,
 
@@ -241,12 +700,191 @@ async function calculateCommission({
 }
 
 
+/*
+=========================================================
+CALCULATE MULTI-ITEM COMMISSION
+=========================================================
+
+Useful when a seller has several items in the same order.
+
+Each item can still have its own category/rate.
+
+=========================================================
+*/
+
+async function calculateOrderCommission(
+    items = []
+) {
+
+    if (
+        !Array.isArray(items) ||
+        !items.length
+    ) {
+
+        throw new Error(
+            "Order items are required."
+        );
+
+    }
+
+
+    let grossAmount = 0;
+    let commissionAmount = 0;
+    let sellerNet = 0;
+
+
+    const breakdown = [];
+
+
+    for (
+        const item of items
+    ) {
+
+        const itemTotal =
+            Number(
+                item.itemTotal ||
+                0
+            );
+
+
+        if (
+            !Number.isFinite(
+                itemTotal
+            ) ||
+            itemTotal <= 0
+        ) {
+
+            throw new Error(
+                `Invalid item amount for ${item.listingId || "product"}.`
+            );
+
+        }
+
+
+        const commission =
+            await calculateCommission({
+
+                amount:
+                    itemTotal,
+
+                category:
+                    item.category ||
+                    "general",
+
+            });
+
+
+        grossAmount +=
+            commission.sellerGross;
+
+
+        commissionAmount +=
+            commission.commissionAmount;
+
+
+        sellerNet +=
+            commission.sellerNet;
+
+
+        breakdown.push({
+
+            listingId:
+                item.listingId ||
+                null,
+
+            category:
+                commission.category,
+
+            grossAmount:
+                commission.sellerGross,
+
+            commissionRate:
+                commission.commissionRate,
+
+            commissionAmount:
+                commission.commissionAmount,
+
+            sellerNet:
+                commission.sellerNet,
+
+        });
+
+    }
+
+
+    grossAmount =
+        Number(
+            grossAmount.toFixed(2)
+        );
+
+
+    commissionAmount =
+        Number(
+            commissionAmount.toFixed(2)
+        );
+
+
+    sellerNet =
+        Number(
+            sellerNet.toFixed(2)
+        );
+
+
+    return {
+
+        grossAmount,
+
+        commissionAmount,
+
+        sellerNet,
+
+        breakdown,
+
+    };
+
+}
+
+
+/*
+=========================================================
+GET COMMISSION CONFIG
+=========================================================
+
+Useful for admin dashboards/settings.
+
+=========================================================
+*/
+
+function getDefaultCommissionTable() {
+
+    return {
+
+        ...COMMISSION_RATES,
+
+        general:
+            DEFAULT_COMMISSION_RATE,
+
+    };
+
+}
+
+
+/*
+=========================================================
+EXPORTS
+=========================================================
+*/
+
 module.exports = {
 
     getCommissionRate,
 
     calculateCommission,
 
+    calculateOrderCommission,
+
     normalizeCategory,
+
+    getDefaultCommissionTable,
 
 };

@@ -2,7 +2,9 @@ const {
   processMpesaCallback,
 } = require("../service/paymentCallbackService");
 
-
+const {
+  processMpesaB2CCallback,
+} = require("../service/withdrawalCallbackService");
 /*
 =========================================================
 WEBHOOK CONTROLLER
@@ -193,7 +195,6 @@ because that service expects:
 Body.stkCallback
 =========================================================
 */
-
 async function mpesaB2CCallback(req, res) {
 
   try {
@@ -211,10 +212,16 @@ async function mpesaB2CCallback(req, res) {
     );
 
 
+    const result =
+      await processMpesaB2CCallback(
+        req.body
+      );
+
+
     console.log(
-      "B2C CALLBACK:",
+      "📦 B2C CALLBACK RESULT:",
       JSON.stringify(
-        req.body,
+        result,
         null,
         2
       )
@@ -222,24 +229,8 @@ async function mpesaB2CCallback(req, res) {
 
 
     /*
-    =====================================================
-    TODO:
-    Connect this to your dedicated B2C withdrawal
-    callback service.
-
-    Example future architecture:
-
-    processMpesaB2CCallback(req.body)
-
-    Do NOT call processMpesaCallback() here.
-    =====================================================
-    */
-
-
-    /*
-    -------------------------------------------------------
-    ACKNOWLEDGE SAFARICOM
-    -------------------------------------------------------
+    IMPORTANT:
+    Always acknowledge Safaricom.
     */
 
     return res.sendStatus(200);
@@ -251,17 +242,11 @@ async function mpesaB2CCallback(req, res) {
       error
     );
 
-
-    /*
-    Always acknowledge Safaricom.
-    */
-
     return res.sendStatus(200);
 
   }
 
 }
-
 
 module.exports = {
 

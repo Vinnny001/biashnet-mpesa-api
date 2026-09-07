@@ -119,6 +119,9 @@ async function createCheckoutController(
                 items,
 
                 buyerPhone,
+                pickupStation,
+                pickupStationId,
+                doorDelivery,
 
                 deliveryAddress
 
