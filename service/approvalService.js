@@ -9,6 +9,7 @@ const {
 
 const {
     APPROVAL_STATUS,
+    APPROVAL_REQUEST_TYPES,
 } = require("../config/financeConstants");
 
 
@@ -179,7 +180,15 @@ async function listPendingApprovals({ requiredLevel } = {}) {
 
     const snapshot = await query.get();
 
-    return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+    /*
+     * ROLE_CHANGE requests are now created/resolved natively by
+     * backend (same shared approvalRequests collection) — exclude
+     * them here so mpesa-api's own queue only ever shows the
+     * financial request types it still owns.
+     */
+    return snapshot.docs
+        .map((document) => ({ id: document.id, ...document.data() }))
+        .filter((request) => request.requestType !== APPROVAL_REQUEST_TYPES.ROLE_CHANGE);
 
 }
 

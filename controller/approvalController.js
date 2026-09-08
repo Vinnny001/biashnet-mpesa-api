@@ -7,7 +7,6 @@ const {
 
 const { APPROVAL_REQUEST_TYPES } = require("../config/financeConstants");
 
-const { applyRoleChange } = require("../service/employeeService");
 const { applyExpensePosting } = require("../service/expenseService");
 const { applyPayrollRun } = require("../service/payrollService");
 const { applyLoanEntry } = require("../service/loanService");
@@ -26,8 +25,6 @@ knows how to actually apply it.
 */
 
 const APPLY_HANDLERS = {
-
-    [APPROVAL_REQUEST_TYPES.ROLE_CHANGE]: applyRoleChange,
 
     [APPROVAL_REQUEST_TYPES.EXPENSE]: applyExpensePosting,
 

@@ -4,6 +4,10 @@ const {
     getOwnerFinanceWithdrawals,
 } = require("../service/financeWithdrawalService");
 
+const {
+    getFinanceWallet,
+} = require("../service/financeWalletService");
+
 
 /*
 =========================================================
@@ -109,6 +113,45 @@ async function getOne(req, res) {
 }
 
 
+async function getWallet(req, res) {
+
+    try {
+
+        const ownerId = req.user?.uid;
+
+        if (!ownerId) {
+
+            return res.status(401).json({
+
+                success: false,
+
+                message: "Authenticated user not found.",
+
+            });
+
+        }
+
+        const wallet = await getFinanceWallet(ownerId);
+
+        return res.status(200).json({ success: true, wallet: wallet || null });
+
+    } catch (error) {
+
+        console.error("❌ Get finance wallet controller error:", error);
+
+        return res.status(400).json({
+
+            success: false,
+
+            message: error.message || "Unable to retrieve wallet.",
+
+        });
+
+    }
+
+}
+
+
 async function getMine(req, res) {
 
     try {
@@ -136,4 +179,4 @@ async function getMine(req, res) {
 }
 
 
-module.exports = { create, getOne, getMine };
+module.exports = { create, getOne, getMine, getWallet };

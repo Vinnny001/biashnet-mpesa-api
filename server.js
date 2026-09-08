@@ -17,17 +17,13 @@ const orderCompletionRoutes =
 
 /*
 =========================================================
-FINANCE DOMAIN ROUTES (Employees/HR/Payroll/Expenses/
-Investor ledger/Loans) — see plan doc in
-.claude/plans (or README) for full context. All additive.
+FINANCE DOMAIN ROUTES (Payroll/Expenses/Investor ledger/
+Loans/Finance withdrawals) — strictly payments/wallets.
+Employees/HR/Positions/Company-info now live natively in
+backend; approvalRoutes here only ever resolves the
+financial request types (ROLE_CHANGE is backend's).
 =========================================================
 */
-
-const employeeRoutes =
-  require("./route/employeeRoutes");
-
-const positionRoutes =
-  require("./route/positionRoutes");
 
 const expenseRoutes =
   require("./route/expenseRoutes");
@@ -46,9 +42,6 @@ const investorLedgerRoutes =
 
 const { loanRouter, lenderRouter } =
   require("./route/loanRoutes");
-
-const companyInfoRoutes =
-  require("./route/companyInfoRoutes");
 
 /*
 =========================================================
@@ -188,10 +181,6 @@ ledger/Loans)
 =========================================================
 */
 
-app.use("/api/employees", employeeRoutes);
-
-app.use("/api/positions", positionRoutes);
-
 app.use("/api/expenses", expenseRoutes);
 
 app.use("/api/approvals", approvalRoutes);
@@ -205,8 +194,6 @@ app.use("/api/investors", investorLedgerRoutes);
 app.use("/api/loans", loanRouter);
 
 app.use("/api/lenders", lenderRouter);
-
-app.use("/api/company-info", companyInfoRoutes);
 
 /*
 =========================================================

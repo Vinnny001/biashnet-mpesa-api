@@ -2,7 +2,7 @@ const express = require("express");
 
 const router = express.Router();
 
-const { create, getOne, getMine } = require("../controller/financeWithdrawalController");
+const { create, getOne, getMine, getWallet } = require("../controller/financeWithdrawalController");
 
 const { requireAuth } = require("../middleware/auth");
 
@@ -20,6 +20,7 @@ requirement is requireAuth, mirroring route/withdrawalRoutes.js.
 
 POST /                     create a withdrawal
 GET  /                     my withdrawals
+GET  /wallet                my financeWalletAccounts balance
 GET  /:withdrawalId        one withdrawal (owner only)
 =========================================================
 */
@@ -27,6 +28,8 @@ GET  /:withdrawalId        one withdrawal (owner only)
 router.post("/", requireAuth, create);
 
 router.get("/", requireAuth, getMine);
+
+router.get("/wallet", requireAuth, getWallet);
 
 router.get("/:withdrawalId", requireAuth, getOne);
 
