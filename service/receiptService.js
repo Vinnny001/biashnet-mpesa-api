@@ -428,6 +428,81 @@ async function getMarketplaceReceipt(
 
 /*
 =========================================================
+LIST MY RECEIPTS (PAYMENT HISTORY)
+=========================================================
+*/
+
+async function listMarketplaceReceipts(
+  buyerId
+) {
+
+  if (!buyerId) {
+
+    throw new Error(
+      "Buyer ID is required."
+    );
+
+  }
+
+  const snapshot =
+    await db
+      .collection(
+        RECEIPTS_COLLECTION
+      )
+      .where(
+        "buyerId",
+        "==",
+        buyerId
+      )
+      .get();
+
+  const receipts =
+    snapshot.docs.map(
+      (doc) => ({
+
+        receiptId:
+          doc.id,
+
+        ...doc.data(),
+
+      })
+    );
+
+  /*
+  -------------------------------------------------------
+  SORT NEWEST FIRST (client-side — same
+  composite-index-avoidance convention used elsewhere)
+  -------------------------------------------------------
+  */
+
+  receipts.sort(
+    (a, b) => {
+
+      const getTime =
+        (value) =>
+          value?.toMillis
+            ? value.toMillis()
+            : value?.seconds
+              ? Number(value.seconds) * 1000
+              : value
+                ? new Date(value).getTime()
+                : 0;
+
+      return (
+        getTime(b.createdAt) -
+        getTime(a.createdAt)
+      );
+
+    }
+  );
+
+  return receipts;
+
+}
+
+
+/*
+=========================================================
 EXPORT
 =========================================================
 */
@@ -437,5 +512,7 @@ module.exports = {
   createMarketplaceReceipt,
 
   getMarketplaceReceipt,
+
+  listMarketplaceReceipts,
 
 };

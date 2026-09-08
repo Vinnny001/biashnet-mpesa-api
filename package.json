@@ -25,6 +25,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "firebase-admin": "^10.3.0",
-    "intasend-node": "^1.1.2"
+    "intasend-node": "^1.1.2",
+    "pdfkit": "^0.20.2"
   }
 }
