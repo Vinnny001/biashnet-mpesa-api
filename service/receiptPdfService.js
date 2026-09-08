@@ -71,7 +71,7 @@ function streamReceiptPdf(receipt, res) {
 
   /*
   -------------------------------------------------------
-  HEADER (logo + name/title alongside it)
+  HEADER (round logo + name/title alongside it)
   -------------------------------------------------------
   */
 
@@ -80,6 +80,22 @@ function streamReceiptPdf(receipt, res) {
 
   try {
 
+    /*
+    Clip to a circle before drawing — the source image is
+    a square file, this crops it to a round badge instead
+    of showing its square corners.
+    */
+
+    doc.save();
+
+    doc
+      .circle(
+        50 + logoSize / 2,
+        headerTop + logoSize / 2,
+        logoSize / 2
+      )
+      .clip();
+
     doc.image(
       LOGO_PATH,
       50,
@@ -87,12 +103,18 @@ function streamReceiptPdf(receipt, res) {
       { width: logoSize, height: logoSize }
     );
 
+    doc.restore();
+
   } catch {
 
     /*
     Missing/unreadable logo file must never break receipt
-    generation — fall back to text-only header.
+    generation — fall back to text-only header. restore()
+    still needs to run so the clip doesn't leak onto the
+    rest of the page.
     */
+
+    doc.restore();
 
   }
 
@@ -145,6 +167,11 @@ function streamReceiptPdf(receipt, res) {
   /*
   -------------------------------------------------------
   ITEMS TABLE
+
+  Row height is measured from the actual title text
+  (which can wrap to more than one line) instead of a
+  fixed increment, so a long product name can never
+  overlap the row below it.
   -------------------------------------------------------
   */
 
@@ -153,16 +180,28 @@ function streamReceiptPdf(receipt, res) {
       ? receipt.items
       : [];
 
+  const COL = {
+
+    item: { x: 50, width: 260 },
+
+    qty: { x: 320, width: 40 },
+
+    unitPrice: { x: 370, width: 80 },
+
+    total: { x: 460, width: 85 },
+
+  };
+
   const tableTop =
     doc.y;
 
   doc
     .fontSize(10)
     .fillColor("#000000")
-    .text("Item", 50, tableTop, { width: 260 })
-    .text("Qty", 320, tableTop, { width: 40, align: "right" })
-    .text("Unit price", 370, tableTop, { width: 80, align: "right" })
-    .text("Total", 460, tableTop, { width: 85, align: "right" });
+    .text("Item", COL.item.x, tableTop, { width: COL.item.width })
+    .text("Qty", COL.qty.x, tableTop, { width: COL.qty.width, align: "right" })
+    .text("Unit price", COL.unitPrice.x, tableTop, { width: COL.unitPrice.width, align: "right" })
+    .text("Total", COL.total.x, tableTop, { width: COL.total.width, align: "right" });
 
   doc.moveDown(0.5);
   doc.strokeColor("#DDDDDD").moveTo(50, doc.y).lineTo(545, doc.y).stroke();
@@ -173,19 +212,28 @@ function streamReceiptPdf(receipt, res) {
     const rowTop =
       doc.y;
 
+    const title =
+      item.title || "Product";
+
+    const rowHeight =
+      Math.max(
+        doc.heightOfString(title, { width: COL.item.width, fontSize: 10 }),
+        14
+      );
+
     doc
       .fontSize(10)
       .fillColor("#333333")
-      .text(item.title || "Product", 50, rowTop, { width: 260 })
-      .text(String(item.quantity || 1), 320, rowTop, { width: 40, align: "right" })
-      .text(formatMoney(item.unitPrice, receipt.currency), 370, rowTop, { width: 80, align: "right" })
-      .text(formatMoney(item.itemTotal, receipt.currency), 460, rowTop, { width: 85, align: "right" });
+      .text(title, COL.item.x, rowTop, { width: COL.item.width })
+      .text(String(item.quantity || 1), COL.qty.x, rowTop, { width: COL.qty.width, align: "right" })
+      .text(formatMoney(item.unitPrice, receipt.currency), COL.unitPrice.x, rowTop, { width: COL.unitPrice.width, align: "right" })
+      .text(formatMoney(item.itemTotal, receipt.currency), COL.total.x, rowTop, { width: COL.total.width, align: "right" });
 
-    doc.moveDown(0.6);
+    doc.x = 50;
+    doc.y = rowTop + rowHeight + 6;
 
   });
 
-  doc.moveDown(0.5);
   doc.strokeColor("#DDDDDD").moveTo(50, doc.y).lineTo(545, doc.y).stroke();
   doc.moveDown(1);
 
@@ -193,24 +241,40 @@ function streamReceiptPdf(receipt, res) {
   /*
   -------------------------------------------------------
   TOTALS
+
+  Label and value are two independent, non-continued
+  text calls sharing one y — combining pdfkit's
+  `continued` mode with different widths/alignments on
+  each half is what caused the overlap.
   -------------------------------------------------------
   */
 
   function totalLine(label, value, { bold = false } = {}) {
 
-    doc
-      .fontSize(bold ? 12 : 10)
-      .fillColor("#000000")
-      .text(label, 370, doc.y, { width: 80, align: "right", continued: true })
-      .text(`   ${formatMoney(value, receipt.currency)}`, { width: 95, align: "right" });
+    const rowTop =
+      doc.y;
 
-    doc.moveDown(0.4);
+    const fontSize =
+      bold ? 12 : 10;
+
+    doc
+      .fontSize(fontSize)
+      .fillColor("#000000")
+      .text(label, 300, rowTop, { width: 150, align: "right" });
+
+    doc
+      .fontSize(fontSize)
+      .fillColor("#000000")
+      .text(formatMoney(value, receipt.currency), 460, rowTop, { width: 85, align: "right" });
+
+    doc.x = 50;
+    doc.y = rowTop + fontSize + 8;
 
   }
 
   totalLine("Subtotal", receipt.subtotal);
   totalLine("Delivery", receipt.deliveryFee);
-  doc.moveDown(0.2);
+  doc.moveDown(0.3);
   totalLine("Total paid", receipt.totalPaid, { bold: true });
 
   doc.moveDown(1.5);
