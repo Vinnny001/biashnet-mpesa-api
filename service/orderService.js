@@ -1837,6 +1837,411 @@ async function removeOrderItem({
 
 /*
 =========================================================
+REDUCE ITEM QUANTITY ON AN UNPAID ORDER
+=========================================================
+
+Buyers can reduce (never increase — that would be adding,
+which is deliberately not supported here) an item's
+quantity on their own unpaid order, when they ordered 2 or
+more of it. Reducing all the way to 0 is not allowed here —
+use removeOrderItem to drop the line entirely. The item's
+per-line totals are recomputed from its own already-stored
+unitPrice/commissionRate (never re-priced against the
+product or re-fetched from the commission service), then
+the order aggregates are re-summed exactly like
+removeOrderItem does.
+=========================================================
+*/
+
+async function reduceOrderItemQuantity({
+
+    orderId,
+
+    buyerId,
+
+    listingId,
+
+    quantity,
+
+}) {
+
+    if (!orderId) {
+
+        throw new Error(
+            "Order ID is required."
+        );
+
+    }
+
+    if (!buyerId) {
+
+        throw new Error(
+            "Buyer ID is required."
+        );
+
+    }
+
+    if (!listingId) {
+
+        throw new Error(
+            "Listing ID is required."
+        );
+
+    }
+
+    const nextQuantity =
+        Number(quantity);
+
+    if (
+        !Number.isInteger(nextQuantity) ||
+        nextQuantity < 1
+    ) {
+
+        throw new Error(
+            "Quantity must be at least 1 — to remove the item entirely, use the remove-item action instead."
+        );
+
+    }
+
+
+    const orderRef =
+        db
+            .collection(COLLECTIONS.ORDERS)
+            .doc(orderId);
+
+
+    return db.runTransaction(
+        async (transaction) => {
+
+            const snapshot =
+                await transaction.get(
+                    orderRef
+                );
+
+            if (!snapshot.exists) {
+
+                throw new Error(
+                    "Order not found."
+                );
+
+            }
+
+            const order =
+                snapshot.data();
+
+            await verifyBuyer({
+
+                order,
+
+                buyerId,
+
+            });
+
+            const editableStatuses = [
+
+                ORDER_STATUS.PENDING_PAYMENT,
+
+                ORDER_STATUS.PAYMENT_INITIATED,
+
+            ];
+
+            if (
+                !editableStatuses.includes(
+                    order.status
+                )
+            ) {
+
+                throw new Error(
+                    `This order can no longer be edited. Current status: ${order.status}.`
+                );
+
+            }
+
+            const items =
+                Array.isArray(order.items)
+                    ? order.items
+                    : [];
+
+            const targetItem =
+                items.find(
+                    (item) =>
+                        item.listingId ===
+                        listingId
+                );
+
+            if (!targetItem) {
+
+                throw new Error(
+                    "That item is not part of this order."
+                );
+
+            }
+
+            const currentQuantity =
+                Number(
+                    targetItem.quantity || 0
+                );
+
+            if (
+                nextQuantity >=
+                currentQuantity
+            ) {
+
+                throw new Error(
+                    `Quantity can only be reduced below the current ${currentQuantity}.`
+                );
+
+            }
+
+
+            /*
+            -------------------------------------------------
+            RE-PRICE ONLY THIS LINE, FROM ITS OWN STORED RATE
+            -------------------------------------------------
+            */
+
+            const unitPrice =
+                Number(
+                    targetItem.unitPrice || 0
+                );
+
+            const commissionRate =
+                Number(
+                    targetItem.commissionRate || 0
+                );
+
+            const itemTotal =
+                money(
+                    unitPrice *
+                    nextQuantity
+                );
+
+            const commissionAmount =
+                money(
+                    itemTotal *
+                    commissionRate
+                );
+
+            const sellerGross =
+                itemTotal;
+
+            const sellerNet =
+                money(
+                    sellerGross -
+                    commissionAmount
+                );
+
+            const updatedItem = {
+
+                ...targetItem,
+
+                quantity:
+                    nextQuantity,
+
+                itemTotal,
+
+                commissionAmount,
+
+                sellerGross,
+
+                sellerNet,
+
+            };
+
+            const updatedItems =
+                items.map(
+                    (item) =>
+                        item.listingId === listingId
+                            ? updatedItem
+                            : item
+                );
+
+
+            /*
+            -------------------------------------------------
+            RE-SUM ORDER AGGREGATES
+            -------------------------------------------------
+            */
+
+            const subtotal =
+                money(
+                    updatedItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.itemTotal || 0),
+                        0
+                    )
+                );
+
+            const totalCommissionAmount =
+                money(
+                    updatedItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.commissionAmount || 0),
+                        0
+                    )
+                );
+
+            const totalSellerGross =
+                money(
+                    updatedItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.sellerGross || 0),
+                        0
+                    )
+                );
+
+            const totalSellerNet =
+                money(
+                    updatedItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.sellerNet || 0),
+                        0
+                    )
+                );
+
+            const deliveryFee =
+                money(
+                    order.deliveryFee || 0
+                );
+
+            const buyerTotal =
+                money(
+                    subtotal + deliveryFee
+                );
+
+
+            /*
+            -------------------------------------------------
+            RE-GROUP SELLER BREAKDOWN
+            -------------------------------------------------
+            */
+
+            const bySeller =
+                new Map();
+
+            for (
+                const item of updatedItems
+            ) {
+
+                const key =
+                    item.sellerId;
+
+                if (!bySeller.has(key)) {
+
+                    const existing =
+                        (order.sellerBreakdown || []).find(
+                            (entry) =>
+                                entry.sellerId === key
+                        );
+
+                    bySeller.set(key, {
+
+                        sellerId: key,
+
+                        sellerName:
+                            existing?.sellerName || null,
+
+                        sellerPhone:
+                            existing?.sellerPhone || null,
+
+                        grossAmount: 0,
+
+                        commissionAmount: 0,
+
+                        sellerNet: 0,
+
+                        sellerPaymentStatus:
+                            existing?.sellerPaymentStatus ||
+                            SELLER_PAYMENT_STATUS.NOT_RELEASED,
+
+                        payoutStatus:
+                            existing?.payoutStatus ||
+                            PAYOUT_STATUS.NOT_RELEASED,
+
+                    });
+
+                }
+
+                const entry =
+                    bySeller.get(key);
+
+                entry.grossAmount =
+                    money(
+                        entry.grossAmount +
+                        Number(item.sellerGross || 0)
+                    );
+
+                entry.commissionAmount =
+                    money(
+                        entry.commissionAmount +
+                        Number(item.commissionAmount || 0)
+                    );
+
+                entry.sellerNet =
+                    money(
+                        entry.sellerNet +
+                        Number(item.sellerNet || 0)
+                    );
+
+            }
+
+            const sellerBreakdown =
+                Array.from(
+                    bySeller.values()
+                );
+
+            const sellerIds =
+                Array.from(
+                    bySeller.keys()
+                );
+
+            const update = {
+
+                items: updatedItems,
+
+                subtotal,
+
+                commissionAmount:
+                    totalCommissionAmount,
+
+                sellerGross:
+                    totalSellerGross,
+
+                sellerNet:
+                    totalSellerNet,
+
+                buyerTotal,
+
+                sellerBreakdown,
+
+                sellerIds,
+
+                updatedAt:
+                    FieldValue.serverTimestamp(),
+
+            };
+
+            transaction.update(
+                orderRef,
+                update
+            );
+
+            return {
+
+                orderId,
+
+                ...update,
+
+            };
+
+        }
+    );
+
+}
+
+
+/*
+=========================================================
 GET ALL BUYER ORDERS
 =========================================================
 
@@ -2873,5 +3278,7 @@ module.exports = {
     */
 
     removeOrderItem,
+
+    reduceOrderItemQuantity,
 
 };

@@ -5,6 +5,7 @@ const {
     cancelOrder,
     resolvePartial,
     removeOrderItem,
+    reduceOrderItemQuantity,
 } = require("../service/orderService");
 
 
@@ -542,6 +543,119 @@ async function removeOrderItemController(req, res) {
 
 /*
 =========================================================
+REDUCE ITEM QUANTITY ON AN UNPAID ORDER
+=========================================================
+
+PATCH
+
+/api/orders/:orderId/items/:listingId
+
+Body:
+
+{ "quantity": <number, must be less than current> }
+
+Buyer-only, only while the order is still unpaid, and
+only a reduction — see orderService.reduceOrderItemQuantity.
+=========================================================
+*/
+
+async function reduceOrderItemQuantityController(req, res) {
+
+    try {
+
+        const buyerId =
+            req.user?.uid;
+
+
+        if (!buyerId) {
+
+            return res.status(401).json({
+
+                success: false,
+
+                message:
+                    "Authenticated user not found.",
+
+            });
+
+        }
+
+
+        const {
+            orderId,
+            listingId,
+        } = req.params;
+
+
+        if (!orderId || !listingId) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Order ID and listing ID are required.",
+
+            });
+
+        }
+
+
+        const result =
+            await reduceOrderItemQuantity({
+
+                orderId,
+
+                buyerId,
+
+                listingId,
+
+                quantity:
+                    req.body?.quantity,
+
+            });
+
+
+        return res.status(200).json({
+
+            success: true,
+
+            ...result,
+
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            "❌ Reduce order item quantity controller error:",
+            error
+        );
+
+        const statusCode =
+            error.message === "Order not found."
+                ? 404
+                : error.message?.includes("not authorized")
+                    ? 403
+                    : 400;
+
+        return res.status(statusCode).json({
+
+            success: false,
+
+            message:
+                error.message ||
+                "Unable to update item quantity.",
+
+        });
+
+    }
+
+}
+
+
+/*
+=========================================================
 RESOLVE PARTIAL FULFILLMENT
 =========================================================
 
@@ -670,6 +784,8 @@ module.exports = {
     cancelOrderController,
 
     removeOrderItemController,
+
+    reduceOrderItemQuantityController,
 
     resolvePartialController,
 

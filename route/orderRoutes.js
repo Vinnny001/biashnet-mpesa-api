@@ -15,6 +15,7 @@ const {
     getSellerOrdersController,
     cancelOrderController,
     removeOrderItemController,
+    reduceOrderItemQuantityController,
     resolvePartialController,
 } = require("../controller/orderController");
 
@@ -148,6 +149,26 @@ router.delete(
     "/:orderId/items/:listingId",
     requireAuth,
     removeOrderItemController
+);
+
+
+/*
+=========================================================
+REDUCE ITEM QUANTITY ON AN UNPAID ORDER
+=========================================================
+
+PATCH
+
+/api/orders/:orderId/items/:listingId
+
+Body: { "quantity": <number, must be less than current> }
+=========================================================
+*/
+
+router.patch(
+    "/:orderId/items/:listingId",
+    requireAuth,
+    reduceOrderItemQuantityController
 );
 
 
