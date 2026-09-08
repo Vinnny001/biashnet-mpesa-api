@@ -866,6 +866,52 @@ async function createCheckout({
 
     /*
     =====================================================
+    PRODUCT EXISTENCE PRE-CHECK
+
+    Checks every listing up front instead of failing on
+    the first missing one — so a buyer with several
+    deleted items in their cart finds out about all of
+    them in one attempt instead of retrying repeatedly.
+    =====================================================
+    */
+
+    const existenceSnapshots =
+        await Promise.all(
+            [...listingIds].map(
+                (listingId) =>
+                    db
+                        .collection(COLLECTIONS.PRODUCTS)
+                        .doc(listingId)
+                        .get()
+            )
+        );
+
+
+    const missingListingIds =
+        existenceSnapshots
+            .filter((snapshot) => !snapshot.exists)
+            .map((snapshot) => snapshot.id);
+
+
+    if (missingListingIds.length === 1) {
+
+        throw new Error(
+            `Product ${missingListingIds[0]} no longer exists.`
+        );
+
+    }
+
+    if (missingListingIds.length > 1) {
+
+        throw new Error(
+            `Products ${missingListingIds.join(", ")} no longer exist.`
+        );
+
+    }
+
+
+    /*
+    =====================================================
     PREPARE TOTALS
     =====================================================
     */
