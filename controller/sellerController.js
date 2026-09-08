@@ -1,5 +1,9 @@
 const sellerService = require("../service/sellerService");
 
+const {
+    getSubOrdersForSeller,
+} = require("../service/logisticsService");
+
 
 /*
 =========================================================
@@ -531,6 +535,58 @@ async function getOrders(
 
 /*
 =========================================================
+GET MY SUB-ORDERS
+=========================================================
+
+GET /api/seller/sub-orders
+
+Per-seller fulfillment status/deadline for each order this
+seller is part of. See service/logisticsService.js.
+=========================================================
+*/
+
+async function getMySubOrders(
+    req,
+    res
+) {
+
+    try {
+
+        const sellerId =
+            getSellerId(
+                req
+            );
+
+
+        const subOrders =
+            await getSubOrdersForSeller(
+                sellerId
+            );
+
+
+        return res.json({
+
+            success:
+                true,
+
+            subOrders,
+
+        });
+
+    } catch (error) {
+
+        return handleError(
+            res,
+            error
+        );
+
+    }
+
+}
+
+
+/*
+=========================================================
 GET SINGLE SELLER ORDER
 =========================================================
 
@@ -924,6 +980,8 @@ module.exports = {
     getOrders,
 
     getOrder,
+
+    getMySubOrders,
 
     getDashboard,
 

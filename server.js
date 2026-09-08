@@ -15,6 +15,55 @@ const receiptRoutes =
 const orderCompletionRoutes =
   require("./route/orderCompletionRoutes");
 
+/*
+=========================================================
+FINANCE DOMAIN ROUTES (Employees/HR/Payroll/Expenses/
+Investor ledger/Loans) — see plan doc in
+.claude/plans (or README) for full context. All additive.
+=========================================================
+*/
+
+const employeeRoutes =
+  require("./route/employeeRoutes");
+
+const positionRoutes =
+  require("./route/positionRoutes");
+
+const expenseRoutes =
+  require("./route/expenseRoutes");
+
+const approvalRoutes =
+  require("./route/approvalRoutes");
+
+const payrollRoutes =
+  require("./route/payrollRoutes");
+
+const financeWithdrawalRoutes =
+  require("./route/financeWithdrawalRoutes");
+
+const investorLedgerRoutes =
+  require("./route/investorLedgerRoutes");
+
+const { loanRouter, lenderRouter } =
+  require("./route/loanRoutes");
+
+const companyInfoRoutes =
+  require("./route/companyInfoRoutes");
+
+/*
+=========================================================
+LOGISTICS / DELIVERY DOMAIN — per-seller sub-orders,
+logistics-managed drop-off confirmation, 36h compliance
+sweep, buyer accept-partial/cancel resolution. All additive.
+=========================================================
+*/
+
+const logisticsRoutes =
+  require("./route/logisticsRoutes");
+
+const internalRoutes =
+  require("./route/internalRoutes");
+
 const app = express();
 
 app.use(cors());
@@ -131,6 +180,45 @@ app.use(
     "/api/payments",
     investmentRoutes
 );
+
+/*
+=========================================================
+FINANCE DOMAIN (Employees/HR/Payroll/Expenses/Investor
+ledger/Loans)
+=========================================================
+*/
+
+app.use("/api/employees", employeeRoutes);
+
+app.use("/api/positions", positionRoutes);
+
+app.use("/api/expenses", expenseRoutes);
+
+app.use("/api/approvals", approvalRoutes);
+
+app.use("/api/payroll", payrollRoutes);
+
+app.use("/api/finance-withdrawals", financeWithdrawalRoutes);
+
+app.use("/api/investors", investorLedgerRoutes);
+
+app.use("/api/loans", loanRouter);
+
+app.use("/api/lenders", lenderRouter);
+
+app.use("/api/company-info", companyInfoRoutes);
+
+/*
+=========================================================
+LOGISTICS / DELIVERY (sub-orders, drop-off confirmation,
+compliance sweep)
+=========================================================
+*/
+
+app.use("/api/logistics", logisticsRoutes);
+
+app.use("/api/internal", internalRoutes);
+
 /*
 =========================================================
 ERROR HANDLER

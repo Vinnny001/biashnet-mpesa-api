@@ -493,6 +493,8 @@ async function initiateB2CPayment({
 
     occasion,
 
+    resultUrl: resultUrlOverride,
+
 }) {
 
     /*
@@ -599,6 +601,7 @@ async function initiateB2CPayment({
     */
 
     const resultUrl =
+        resultUrlOverride ||
         DARajaConfig.b2cResultUrl ||
         DARajaConfig.b2cCallbackUrl;
 

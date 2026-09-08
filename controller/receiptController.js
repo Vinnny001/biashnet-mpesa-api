@@ -91,17 +91,13 @@ async function getReceipt(req, res) {
     */
 
     const receipt =
-      await getMarketplaceReceipt({
+      await getMarketplaceReceipt(
 
-        orderId:
+        String(orderId).trim(),
 
-          String(orderId).trim(),
+        String(buyerId).trim(),
 
-        buyerId:
-
-          String(buyerId).trim(),
-
-      });
+      );
 
 
     /*

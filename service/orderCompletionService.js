@@ -14,6 +14,7 @@ const {
   PAYMENT_STATUS,
   SELLER_PAYMENT_STATUS,
   PAYOUT_STATUS,
+  SUB_ORDER_STATUS,
 } = require("../config/paymentConstants");
 
 const {
@@ -21,8 +22,12 @@ const {
 } = require("../utils/codeGenerator");
 
 const {
-  settleMarketplaceOrder,
-} = require("./settlementService");
+  getSubOrdersForOrder,
+} = require("./logisticsService");
+
+const {
+  releaseSubOrder,
+} = require("./subOrderSettlementService");
 
 
 /*
@@ -30,27 +35,42 @@ const {
 BIASHNET ORDER COMPLETION SERVICE
 =========================================================
 
-BUSINESS FLOW
+BUSINESS FLOW (updated — logistics-managed fulfillment)
+
+Sellers no longer hand items to buyers directly. Each
+seller drops their item(s) at Biashnet and the logistics/
+supply-chain manager confirms receipt per sub-order (see
+service/logisticsService.js) — no code involved for that
+leg, just an order/sub-order ID lookup.
+
+The buyer's completion code now confirms the FINAL
+Biashnet → buyer handoff, once every sub-order for the
+order is ready:
 
 M-PESA SUCCESSFUL
         ↓
-ORDER = PAID
-        ↓
-SELLER FUNDS = HELD
+ORDER = PAID, sub-orders created (PENDING_DROPOFF, 36h each)
         ↓
 BUYER GETS COMPLETION CODE
         ↓
-SELLER DELIVERS PRODUCT
+sellers drop off at Biashnet; logistics confirms each
+sub-order (AT_BIASHNET) — see logisticsService.confirmDropoff
         ↓
-SELLER ENTERS BUYER CODE
+[if a sub-order misses its 36h window: complianceSweepService
+marks it NON_COMPLIANT and the buyer is asked to accept the
+available items or cancel — see orderService.resolvePartial]
         ↓
-BACKEND VERIFIES CODE
+once every sub-order is AT_BIASHNET (or already resolved),
+Biashnet delivers the consolidated order to the buyer
+        ↓
+BUYER GIVES THE CODE TO BIASHNET'S DELIVERY/LOGISTICS AGENT
+        ↓
+BACKEND VERIFIES CODE (this function)
         ↓
 ORDER = COMPLETED
         ↓
-SETTLEMENT SERVICE
-        ↓
-SELLER FUNDS RELEASED
+every AT_BIASHNET sub-order is released via
+subOrderSettlementService.releaseSubOrder
         ↓
 SELLER AVAILABLE WALLET BALANCE
         ↓
@@ -61,12 +81,15 @@ SECURITY
 
 - Buyer receives the plain code.
 - Firestore stores a hash + encrypted copy.
-- Seller never receives the code automatically.
 - Code belongs to the order.
 - Code can only be used once.
 - Wrong attempts are tracked.
-- Seller must belong to order.sellerBreakdown.
-- Settlement only happens after successful code verification.
+- Verification is performed by Biashnet logistics staff
+  (requireEmployeeRole("logistics","admin") on the route),
+  not by any particular seller.
+- Settlement only happens after successful code verification
+  (or, for non-compliant sellers, via the separate
+  accept-partial/cancel resolution path).
 =========================================================
 */
 
@@ -806,25 +829,26 @@ async function getBuyerCompletionCode(
 VERIFY COMPLETION CODE
 =========================================================
 
-SELLER SUBMITS:
+BIASHNET LOGISTICS STAFF SUBMITS (on final delivery to
+the buyer — not a seller anymore):
 
 orderId
-sellerId
 code
+confirmedBy   // logistics manager's uid
 
 PROCESS:
 
 1. Find order
-2. Verify seller belongs to order
-3. Verify payment completed
-4. Verify funds held
+2. Verify payment completed
+3. Verify funds held
+4. Verify every sub-order is ready (none PENDING_DROPOFF)
 5. Verify code active
 6. Check attempts
 7. Hash submitted code
 8. Compare hashes
 9. Mark code used
 10. Mark order completed
-11. Call settlementService
+11. Release every AT_BIASHNET sub-order via subOrderSettlementService
 12. Record settlement result
 
 =========================================================
@@ -836,7 +860,7 @@ async function verifyCompletionCode({
 
   code,
 
-  sellerId,
+  confirmedBy,
 
 }) {
 
@@ -854,8 +878,8 @@ async function verifyCompletionCode({
   );
 
   console.log(
-    "Seller:",
-    sellerId
+    "Confirmed by (logistics):",
+    confirmedBy
   );
 
   console.log(
@@ -877,10 +901,10 @@ async function verifyCompletionCode({
 
   }
 
-  if (!sellerId) {
+  if (!confirmedBy) {
 
     throw new Error(
-      "Seller ID is required."
+      "Confirming logistics manager ID is required."
     );
 
   }
@@ -904,33 +928,6 @@ async function verifyCompletionCode({
     await getOrder(
       orderId
     );
-
-
-  /*
-  =======================================================
-  VERIFY SELLER
-  =======================================================
-  */
-
-  const sellerInOrder =
-    Array.isArray(
-      order.sellerBreakdown
-    ) &&
-    order.sellerBreakdown.some(
-      seller =>
-        seller &&
-        seller.sellerId ===
-        sellerId
-    );
-
-
-  if (!sellerInOrder) {
-
-    throw new Error(
-      "Seller is not part of this order."
-    );
-
-  }
 
 
   /*
@@ -1015,6 +1012,45 @@ async function verifyCompletionCode({
 
     throw new Error(
       "Seller funds are not in the expected held state."
+    );
+
+  }
+
+
+  /*
+  =======================================================
+  ALL SUB-ORDERS MUST BE READY
+  =======================================================
+
+  Biashnet cannot deliver a consolidated order to the
+  buyer while a seller still hasn't dropped off their
+  item(s). If any sub-order is still PENDING_DROPOFF, the
+  order isn't ready yet — the buyer should not be asked
+  for their code until either every seller has complied,
+  or non-compliant sub-orders have already been resolved
+  via the accept-partial/cancel decision
+  (orderService.resolvePartial).
+  =======================================================
+  */
+
+  const subOrders =
+    await getSubOrdersForOrder(
+      orderId
+    );
+
+  const stillWaitingOnSeller =
+    subOrders.some(
+      (subOrder) =>
+        subOrder.status ===
+        SUB_ORDER_STATUS.PENDING_DROPOFF
+    );
+
+  if (
+    stillWaitingOnSeller
+  ) {
+
+    throw new Error(
+      "This order is not ready for delivery yet — still waiting on a seller drop-off."
     );
 
   }
@@ -1215,7 +1251,7 @@ async function verifyCompletionCode({
       now,
 
     orderCompletionCodeUsedBy:
-      sellerId,
+      confirmedBy,
 
     orderCompletionCodeStatus:
       "USED",
@@ -1243,145 +1279,129 @@ async function verifyCompletionCode({
 
   /*
   =======================================================
-  SETTLE MARKETPLACE ORDER
+  RELEASE EVERY READY SUB-ORDER
   =======================================================
 
-  IMPORTANT
+  Unlike the old single-seller settlement, this releases
+  EVERY sub-order that's AT_BIASHNET — not just one. A
+  sub-order that's already RELEASED (e.g. resolved earlier
+  via the accept-partial decision) is skipped by
+  releaseSubOrder()'s own idempotency check; one that's
+  NON_COMPLIANT/REFUNDED/CANCELLED is skipped here since
+  releasing it would be wrong (it was already resolved the
+  other way).
 
-  This calls your existing settlement service.
-
-  Expected contract:
-
-  settleMarketplaceOrder({
-      orderId,
-      sellerId,
-      completionCodeVerified: true
-  })
-
-  The settlement service must:
-
-  - verify the order
-  - verify the seller
-  - verify held funds
-  - release seller funds
-  - update seller wallet
-  - update seller payout status
-  - record the settlement transaction
-  - be idempotent
+  A failure releasing one sub-order must not stop the
+  others — money for a compliant seller should not be
+  held hostage by an unrelated failure.
   =======================================================
   */
 
-  let settlement;
+  const releasable =
+    subOrders.filter(
+      (subOrder) =>
+        subOrder.status ===
+        SUB_ORDER_STATUS.AT_BIASHNET
+    );
 
-  try {
+  const settlements = [];
 
-    settlement =
-      await settleMarketplaceOrder({
+  const settlementErrors = [];
 
-        orderId,
+  for (
+    const subOrder
+    of releasable
+  ) {
 
-        sellerId,
+    try {
 
-        completionCodeVerified:
-          true,
+      const settled =
+        await releaseSubOrder(
+          subOrder.subOrderId
+        );
+
+      settlements.push(
+        settled
+      );
+
+    } catch (settlementError) {
+
+      console.error(
+        "❌ Sub-order settlement failed:",
+        subOrder.subOrderId,
+        settlementError
+      );
+
+      settlementErrors.push({
+
+        subOrderId:
+          subOrder.subOrderId,
+
+        message:
+          settlementError.message,
 
       });
 
-
-    /*
-    =====================================================
-    SETTLEMENT SUCCESS
-    =====================================================
-    */
-
-    await orderRef.update({
-
-      settlementStatus:
-        "COMPLETED",
-
-      settlementCompletedAt:
-        FieldValue.serverTimestamp(),
-
-      settlementError:
-        null,
-
-      updatedAt:
-        FieldValue.serverTimestamp(),
-
-    });
-
-
-    console.log(
-      "✅ Seller settlement completed:",
-      orderId,
-      sellerId
-    );
-
-
-  } catch (settlementError) {
-
-    console.error(
-      "❌ Seller settlement failed:",
-      settlementError
-    );
-
-
-    /*
-    =====================================================
-    IMPORTANT
-
-    ORDER IS COMPLETED.
-
-    PAYMENT REMAINS SAFE.
-
-    MONEY MUST REMAIN HELD UNTIL SETTLEMENT
-    IS SUCCESSFULLY RETRIED.
-    =====================================================
-    */
-
-    await orderRef.update({
-
-      settlementStatus:
-        "PENDING",
-
-      settlementError:
-        settlementError.message,
-
-      updatedAt:
-        FieldValue.serverTimestamp(),
-
-    });
-
-
-    return {
-
-      success:
-        true,
-
-      alreadyCompleted:
-        false,
-
-      orderId,
-
-      sellerId,
-
-      status:
-        ORDER_STATUS.COMPLETED,
-
-      completionCodeVerified:
-        true,
-
-      settlementStatus:
-        "PENDING",
-
-      settlement: null,
-
-      message:
-        "Completion code verified. Seller settlement is pending processing.",
-
-    };
+    }
 
   }
+
+
+  /*
+  =====================================================
+  RECORD OUTCOME ON THE ORDER
+  =====================================================
+
+  IMPORTANT
+
+  ORDER IS COMPLETED regardless of settlement outcome —
+  the buyer has confirmed delivery. Payment remains safe;
+  any sub-order that failed to release stays AT_BIASHNET
+  (not RELEASED) so it can be retried, it just isn't lost.
+  =====================================================
+  */
+
+  const settlementStatus =
+    settlementErrors.length === 0
+      ? "COMPLETED"
+      : (
+        settlements.length > 0
+          ? "PARTIALLY_COMPLETED"
+          : "PENDING"
+      );
+
+  await orderRef.update({
+
+    settlementStatus,
+
+    settlementCompletedAt:
+      FieldValue.serverTimestamp(),
+
+    settlementError:
+      settlementErrors.length > 0
+        ? JSON.stringify(
+          settlementErrors
+        )
+        : null,
+
+    updatedAt:
+      FieldValue.serverTimestamp(),
+
+  });
+
+
+  console.log(
+    settlementErrors.length === 0
+      ? "✅ All sub-order settlements completed:"
+      : "⚠️ Some sub-order settlements failed:",
+    orderId,
+    {
+      settled:
+        settlements.length,
+      failed:
+        settlementErrors.length,
+    }
+  );
 
 
   /*
@@ -1400,7 +1420,7 @@ async function verifyCompletionCode({
 
     orderId,
 
-    sellerId,
+    confirmedBy,
 
     status:
       ORDER_STATUS.COMPLETED,
@@ -1408,13 +1428,16 @@ async function verifyCompletionCode({
     completionCodeVerified:
       true,
 
-    settlementStatus:
-      "COMPLETED",
+    settlementStatus,
 
-    settlement,
+    settlements,
+
+    settlementErrors,
 
     message:
-      "Order completed successfully and seller settlement processed.",
+      settlementErrors.length === 0
+        ? "Order completed successfully and every seller settlement was processed."
+        : "Order completed. Some seller settlements failed and will need to be retried.",
 
   };
 

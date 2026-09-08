@@ -77,6 +77,12 @@ async function createCheckoutController(
 
             buyerPhone,
 
+            pickupStation,
+
+            pickupStationId,
+
+            doorDelivery,
+
             deliveryAddress
 
         } = req.body;

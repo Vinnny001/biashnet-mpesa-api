@@ -36,6 +36,10 @@ const {
 } = require("./investmentStats");
 
 const {
+  recordContribution: recordInvestorContribution,
+} = require("./investorLedgerService");
+
+const {
   generateOrderCompletionCode,
 } = require("./orderCompletionService");
 
@@ -267,221 +271,30 @@ async function marketplaceCallback(
     });
 
     /*
-=========================================================
-POST-PAYMENT MARKETPLACE PROCESSING
-=========================================================
-*/
+    =====================================================
+    IMPORTANT
 
-let completionResult;
-let receiptResult;
-
-try {
-
-  /*
-  -------------------------------------------------------
-  1. GENERATE COMPLETION CODE
-  -------------------------------------------------------
-  */
-
-  completionResult =
-    await generateOrderCompletionCode(
-      payment.orderId
-    );
-
-
-  /*
-  -------------------------------------------------------
-  2. CREATE MARKETPLACE RECEIPT
-  -------------------------------------------------------
-  */
-
-  receiptResult =
-    await createMarketplaceReceipt(
-      payment.orderId
-    );
-
-
-  /*
-  -------------------------------------------------------
-  3. GET UPDATED ORDER
-  -------------------------------------------------------
-  */
-
-  const orderSnap =
-    await db
-      .collection(COLLECTIONS.ORDERS)
-      .doc(payment.orderId)
-      .get();
-
-  if (!orderSnap.exists) {
-
-    throw new Error(
-      "Order not found after payment processing."
-    );
-
-  }
-
-  const order =
-    orderSnap.data();
-
-
-  /*
-  -------------------------------------------------------
-  4. BUYER PAYMENT SUCCESS
-  -------------------------------------------------------
-  */
-
-  await notifyBuyerPaymentSuccess({
-
-    buyerId:
-      order.buyerId,
-
-    orderId:
-      payment.orderId,
-
-    amount,
-
-    receiptNumber:
-      receipt,
-
-  });
-
-
-  /*
-  -------------------------------------------------------
-  5. BUYER COMPLETION CODE
-  -------------------------------------------------------
-  */
-
-  await notifyBuyerCompletionCode({
-
-    buyerId:
-      order.buyerId,
-
-    orderId:
-      payment.orderId,
-
-  });
-
-
-  /*
-  -------------------------------------------------------
-  6. SELLER NOTIFICATIONS
-  -------------------------------------------------------
-  */
-
-  for (
-    const seller
-    of order.sellerBreakdown || []
-  ) {
-
-    if (!seller.sellerId) {
-      continue;
-    }
-
-    await notifySellerNewOrder({
-
-      sellerId:
-        seller.sellerId,
-
-      orderId:
-        payment.orderId,
-
-      amount:
-        seller.grossAmount ||
-        seller.sellerGross ||
-        seller.grossAmount ||
-        0,
-
-    });
-
-  }
-
-
-  /*
-  -------------------------------------------------------
-  7. SAVE REFERENCES
-  -------------------------------------------------------
-  */
-
-  await orderSnap.ref.update({
-
-    receiptId:
-      receiptResult.receiptId,
-
-    receiptNumber:
-      receipt,
-
-    orderCompletionCodeStatus:
-      "ACTIVE",
-
-    updatedAt:
-      new Date(),
-
-  });
-
-} catch (postPaymentError) {
-
-  console.error(
-    "⚠️ Post-payment processing failed:",
-    postPaymentError
-  );
-
-  /*
-  IMPORTANT:
-  Payment remains COMPLETED.
-  */
-
-  await ref.update({
-
-    callbackProcessingStatus:
-      "POST_PAYMENT_PROCESSING_FAILED",
-
-    callbackProcessingError:
-      postPaymentError.message,
-
-    receivedByPlatform:
-      true,
-
-    updatedAt:
-      new Date(),
-
-  });
-
-}
+    Without this return, execution would fall through
+    into the post-payment success block below (completion
+    code, receipt, "payment succeeded" notification) for a
+    payment that was never actually confirmed — the order
+    would never be marked PAID/funds held, but the buyer
+    would be told it succeeded. See withdrawalCallbackService.js's
+    sibling "missing withdrawal ID" branch for the same
+    early-return pattern.
+    =====================================================
+    */
 
     return {
 
-  handled: true,
+      handled: true,
 
-  success: true,
+      requiresReview: true,
 
-  alreadyProcessed:
-    result?.alreadyProcessed || false,
+      reason:
+        "MISSING_MPESA_RECEIPT",
 
-  status:
-    PAYMENT_STATUS.COMPLETED,
-
-  orderId:
-    payment.orderId,
-
-  paymentId:
-    payment.paymentId || doc.id,
-
-  receiptNumber:
-    receipt,
-
-  transactionId:
-    result?.providerTransactionId ||
-    receipt,
-
-  receiptId:
-    receiptResult?.receiptId || null,
-
-  completionCodeGenerated:
-    Boolean(completionResult),
-
-};
+    };
 
   }
 
@@ -737,6 +550,162 @@ try {
 
   /*
   =======================================================
+  POST-PAYMENT MARKETPLACE PROCESSING
+  =======================================================
+
+  Completion code, buyer receipt, and buyer/seller
+  notifications. Skipped when this call's own idempotency
+  check above (result.alreadyProcessed) shows the payment
+  was already processed by a prior/concurrent delivery of
+  the same webhook — otherwise a retried M-Pesa callback
+  would regenerate the completion code (invalidating the
+  one the buyer already has) and re-send notifications.
+
+  Failures here are logged but never fail the payment —
+  the payment is already COMPLETED at this point, and a
+  notification/receipt problem must not make it look like
+  the payment itself failed.
+  =======================================================
+  */
+
+  let completionResult;
+  let receiptResult;
+
+  if (
+    !result?.alreadyProcessed
+  ) {
+
+    try {
+
+      completionResult =
+        await generateOrderCompletionCode(
+          payment.orderId
+        );
+
+      receiptResult =
+        await createMarketplaceReceipt(
+          payment.orderId
+        );
+
+      const orderSnap =
+        await db
+          .collection(COLLECTIONS.ORDERS)
+          .doc(payment.orderId)
+          .get();
+
+      if (!orderSnap.exists) {
+
+        throw new Error(
+          "Order not found after payment processing."
+        );
+
+      }
+
+      const order =
+        orderSnap.data();
+
+      await notifyBuyerPaymentSuccess({
+
+        buyerId:
+          order.buyerId,
+
+        orderId:
+          payment.orderId,
+
+        amount,
+
+        receiptNumber:
+          receipt,
+
+      });
+
+      await notifyBuyerCompletionCode({
+
+        buyerId:
+          order.buyerId,
+
+        orderId:
+          payment.orderId,
+
+      });
+
+      for (
+        const seller
+        of order.sellerBreakdown || []
+      ) {
+
+        if (!seller.sellerId) {
+          continue;
+        }
+
+        await notifySellerNewOrder({
+
+          sellerId:
+            seller.sellerId,
+
+          orderId:
+            payment.orderId,
+
+          amount:
+            seller.grossAmount ||
+            seller.sellerGross ||
+            0,
+
+        });
+
+      }
+
+      await orderSnap.ref.update({
+
+        receiptId:
+          receiptResult.receiptId,
+
+        receiptNumber:
+          receipt,
+
+        orderCompletionCodeStatus:
+          "ACTIVE",
+
+        updatedAt:
+          new Date(),
+
+      });
+
+    } catch (postPaymentError) {
+
+      console.error(
+        "⚠️ Post-payment processing failed:",
+        postPaymentError
+      );
+
+      /*
+      IMPORTANT:
+      Payment remains COMPLETED.
+      */
+
+      await ref.update({
+
+        callbackProcessingStatus:
+          "POST_PAYMENT_PROCESSING_FAILED",
+
+        callbackProcessingError:
+          postPaymentError.message,
+
+        receivedByPlatform:
+          true,
+
+        updatedAt:
+          new Date(),
+
+      });
+
+    }
+
+  }
+
+
+  /*
+  =======================================================
   SUCCESS
   =======================================================
   */
@@ -768,10 +737,14 @@ try {
       result?.providerTransactionId ||
       receipt,
 
+    receiptId:
+      receiptResult?.receiptId ||
+      null,
+
+    completionCodeGenerated:
+      Boolean(completionResult),
+
   };
-
-
-  
 
 }
 
@@ -1042,6 +1015,55 @@ async function investmentCallback(
 
 
     await updateInvestmentStats();
+
+
+    /*
+    =======================================================
+    ADDITIVE: FINANCE LEDGER (Employees/HR/Investors/Loans
+    domain — see service/investorLedgerService.js)
+    =======================================================
+
+    Records this contribution into the new, separate
+    financeTransactionRecords ledger and credits a new
+    financeWalletAccounts/{investorId} document.
+
+    This does NOT read or write the investor/wallets/
+    transactions collections above — it is purely additive
+    and wrapped so a failure here can never affect the
+    legacy investment flow that already completed.
+    =======================================================
+    */
+
+    try {
+
+      await recordInvestorContribution({
+
+        investorId:
+          pending.userId,
+
+        amount,
+
+        providerTransactionId:
+          receipt,
+
+        metadata: {
+
+          checkoutRequestID,
+
+          phone,
+
+        },
+
+      });
+
+    } catch (financeLedgerError) {
+
+      console.error(
+        "⚠️ Finance ledger investor contribution recording failed (legacy investment flow unaffected):",
+        financeLedgerError
+      );
+
+    }
 
 
     await ref.update({

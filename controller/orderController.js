@@ -1,9 +1,9 @@
 const {
-    createOrder,
     getOrder,
     getBuyerOrders,
     getSellerOrders,
     cancelOrder,
+    resolvePartial,
 } = require("../service/orderService");
 
 
@@ -39,137 +39,20 @@ Those responsibilities belong to services.
 
 /*
 =========================================================
-CREATE ORDER
-=========================================================
+NOTE — ORDER CREATION
 
-POST
-
-/api/orders
-
-Body example:
-
-{
-    "listingId": "abc123",
-    "quantity": 2,
-    "buyerPhone": "0712345678",
-    "deliveryAddress": "...",
-    "deliveryMethod": "PICKUP"
-}
-
-buyerId comes from Firebase Authentication.
+There is deliberately no "create single order" endpoint
+here. POST /api/payments/checkout (checkoutController.js)
+is the real, cart-aware, multi-seller order-creation path
+— it's what computes sellerBreakdown/sellerIds that
+getSellerOrders below depends on. A second, parallel
+single-item order-creation path would immediately drift
+from checkout's validation/pricing logic, which is exactly
+what orderService.js's own file header already warns
+against ("This service therefore does NOT create a second,
+different order structure.").
 =========================================================
 */
-
-async function createOrderController(req, res) {
-
-    try {
-
-        const buyerId =
-            req.user?.uid;
-
-
-        if (!buyerId) {
-
-            return res.status(401).json({
-
-                success: false,
-
-                message:
-                    "Authenticated user not found."
-
-            });
-
-        }
-
-
-        const {
-            listingId,
-            quantity,
-            buyerPhone,
-            deliveryAddress,
-            deliveryMethod,
-        } = req.body;
-
-
-        if (!listingId) {
-
-            return res.status(400).json({
-
-                success: false,
-
-                message:
-                    "Listing ID is required."
-
-            });
-
-        }
-
-
-        if (
-            quantity === undefined ||
-            quantity === null
-        ) {
-
-            return res.status(400).json({
-
-                success: false,
-
-                message:
-                    "Quantity is required."
-
-            });
-
-        }
-
-
-        const result =
-            await createOrder({
-
-                buyerId,
-
-                listingId,
-
-                quantity,
-
-                buyerPhone,
-
-                deliveryAddress,
-
-                deliveryMethod,
-
-            });
-
-
-        return res.status(201).json({
-
-            success: true,
-
-            ...result,
-
-        });
-
-
-    } catch (error) {
-
-        console.error(
-            "❌ Create order controller error:",
-            error
-        );
-
-
-        return res.status(400).json({
-
-            success: false,
-
-            message:
-                error.message ||
-                "Unable to create order.",
-
-        });
-
-    }
-
-}
 
 
 /*
@@ -556,13 +439,124 @@ async function cancelOrderController(req, res) {
 
 /*
 =========================================================
+RESOLVE PARTIAL FULFILLMENT
+=========================================================
+
+POST
+
+/api/orders/:orderId/resolve-partial
+
+Body:
+
+{
+    "decision": "accept_partial" | "cancel"
+}
+
+Only valid once the order has been flagged
+(customerDecisionRequired: true) by the compliance
+sweep because a seller missed their 36h drop-off window.
+=========================================================
+*/
+
+async function resolvePartialController(req, res) {
+
+    try {
+
+        const userId =
+            req.user?.uid;
+
+
+        if (!userId) {
+
+            return res.status(401).json({
+
+                success: false,
+
+                message:
+                    "Authenticated user not found.",
+
+            });
+
+        }
+
+
+        const {
+            orderId,
+        } = req.params;
+
+
+        if (!orderId) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Order ID is required.",
+
+            });
+
+        }
+
+
+        const body =
+            req.body || {};
+
+
+        const result =
+            await resolvePartial({
+
+                orderId,
+
+                userId,
+
+                decision:
+                    body.decision,
+
+            });
+
+
+        return res.status(200).json({
+
+            success: true,
+
+            ...result,
+
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            "❌ Resolve partial fulfillment controller error:",
+            error
+        );
+
+
+        return res.status(
+            error.statusCode || 400
+        ).json({
+
+            success: false,
+
+            message:
+                error.message ||
+                "Unable to resolve order.",
+
+        });
+
+    }
+
+}
+
+
+/*
+=========================================================
 EXPORT
 =========================================================
 */
 
 module.exports = {
-
-    createOrderController,
 
     getOrderController,
 
@@ -571,5 +565,7 @@ module.exports = {
     getSellerOrdersController,
 
     cancelOrderController,
+
+    resolvePartialController,
 
 };

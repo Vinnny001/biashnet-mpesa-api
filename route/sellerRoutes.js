@@ -182,6 +182,23 @@ router.get(
 );
 
 
+/*
+=========================================================
+SELLER SUB-ORDERS
+
+Per-order drop-off status/deadline for this seller — see
+service/logisticsService.js.
+=========================================================
+*/
+
+router.get(
+    "/sub-orders",
+    requireAuth,
+    sellerAuth,
+    sellerController.getMySubOrders
+);
+
+
 
 /*
 =========================================================

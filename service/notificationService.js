@@ -282,6 +282,88 @@ async function notifySellerOrderCompleted({
 
 /*
 =========================================================
+SELLER DROP-OFF REMINDER / NON-COMPLIANT
+=========================================================
+*/
+
+async function notifySellerNonCompliant({
+
+  sellerId,
+
+  orderId,
+
+}) {
+
+  return createNotification(
+
+    sellerId,
+
+    {
+
+      title:
+        "Drop-off window missed",
+
+      message:
+        `You did not drop off your item(s) for order ${orderId} at Biashnet within the 36-hour window. The buyer is now being asked to accept the order without your item(s) or cancel it — your payout for this order may be refunded to the buyer.`,
+
+      type:
+        "DROPOFF_NON_COMPLIANT",
+
+      orderId,
+
+    }
+
+  );
+
+}
+
+
+/*
+=========================================================
+BUYER PARTIAL-FULFILLMENT CHOICE
+=========================================================
+*/
+
+async function notifyBuyerPartialFulfillmentChoice({
+
+  buyerId,
+
+  orderId,
+
+  availableSellerCount,
+
+  totalSellerCount,
+
+}) {
+
+  return createNotification(
+
+    buyerId,
+
+    {
+
+      title:
+        "Action needed on your order",
+
+      message:
+        availableSellerCount > 0
+          ? `${availableSellerCount} of ${totalSellerCount} sellers on order ${orderId} did not drop off their item(s) in time. Choose whether to receive the available items or cancel the order for a full refund.`
+          : `None of the sellers on order ${orderId} dropped off their item(s) in time. Please cancel the order for a full refund.`,
+
+      type:
+        "PARTIAL_FULFILLMENT_CHOICE",
+
+      orderId,
+
+    }
+
+  );
+
+}
+
+
+/*
+=========================================================
 MARK AS READ
 =========================================================
 */
@@ -437,6 +519,10 @@ module.exports = {
   notifyBuyerOrderCompleted,
 
   notifySellerOrderCompleted,
+
+  notifySellerNonCompliant,
+
+  notifyBuyerPartialFulfillmentChoice,
 
   markNotificationRead,
 

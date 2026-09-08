@@ -1,9 +1,25 @@
 const {
-    createWithdrawal,
     getWithdrawal,
     getUserWithdrawals,
     cancelWithdrawal
 } = require("../service/withdrawalService");
+
+/*
+IMPORTANT:
+
+Withdrawal CREATION goes through b2cInitiationService,
+not withdrawalService.createWithdrawal() directly.
+
+b2cInitiationService.initiateB2CWithdrawal() calls
+createWithdrawal() internally to lock funds, THEN sends
+the actual M-Pesa B2C payout request. Calling
+createWithdrawal() alone (the previous behavior here)
+locked seller funds into withdrawalBalance but never
+paid anything out — money was stuck indefinitely.
+*/
+const {
+    initiateB2CWithdrawal
+} = require("../service/b2cInitiationService");
 
 
 /*
@@ -112,7 +128,7 @@ async function create(req, res) {
 
 
         const result =
-            await createWithdrawal({
+            await initiateB2CWithdrawal({
 
                 userId,
 
@@ -210,16 +226,15 @@ async function getMyWithdrawal(req, res) {
 
 
         const withdrawal =
-            await getWithdrawal({
-
-                withdrawalId,
-
-                userId
-
-            });
+            await getWithdrawal(
+                withdrawalId
+            );
 
 
-        if (!withdrawal) {
+        if (
+            !withdrawal ||
+            withdrawal.userId !== userId
+        ) {
 
             return res.status(404).json({
 
@@ -301,11 +316,9 @@ async function getMyWithdrawals(req, res) {
 
 
         const withdrawals =
-            await getUserWithdrawals({
-
+            await getUserWithdrawals(
                 userId
-
-            });
+            );
 
 
         return res.status(200).json({

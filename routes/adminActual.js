@@ -1,3 +1,19 @@
+/*
+=========================================================
+ORPHANED — NOT WIRED INTO server.js
+=========================================================
+
+Confirmed via repo-wide search: nothing requires this file
+(or anything else in this plural `routes/` directory).
+server.js only mounts routers from the singular `route/`
+directory. Do not edit this expecting it to be live, and
+do not re-wire it without first checking whether its
+collection/field shapes (e.g. the "expenses" collection
+used by ../services/companyExpenses.js) still match the
+current data model — they predate it.
+=========================================================
+*/
+
 const express =
   require("express");
 

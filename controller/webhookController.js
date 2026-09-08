@@ -5,6 +5,10 @@ const {
 const {
   processMpesaB2CCallback,
 } = require("../service/withdrawalCallbackService");
+
+const {
+  processFinanceB2CCallback,
+} = require("../service/financeWithdrawalCallbackService");
 /*
 =========================================================
 WEBHOOK CONTROLLER
@@ -248,10 +252,53 @@ async function mpesaB2CCallback(req, res) {
 
 }
 
+/*
+=========================================================
+FINANCE M-PESA B2C CALLBACK
+=========================================================
+
+POST
+
+/api/webhooks/mpesa/finance-b2c
+
+Dedicated result URL for Employees/HR/Payroll/Investor
+finance withdrawals (see service/financeWithdrawalService.js).
+Kept separate from mpesaB2CCallback so the marketplace
+seller withdrawal path above is never touched.
+=========================================================
+*/
+async function mpesaFinanceB2CCallback(req, res) {
+
+  try {
+
+    const result = await processFinanceB2CCallback(req.body);
+
+    console.log(
+      "📦 FINANCE B2C CALLBACK RESULT:",
+      JSON.stringify(result, null, 2)
+    );
+
+    return res.sendStatus(200);
+
+  } catch (error) {
+
+    console.error(
+      "❌ Finance B2C webhook controller error:",
+      error
+    );
+
+    return res.sendStatus(200);
+
+  }
+
+}
+
 module.exports = {
 
   mpesaStkCallback,
 
   mpesaB2CCallback,
+
+  mpesaFinanceB2CCallback,
 
 };

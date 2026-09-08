@@ -10,17 +10,20 @@ const {
 const {
   PAYMENT_STATUS,
   ORDER_STATUS,
+  SUB_ORDER_STATUS,
   SELLER_PAYMENT_STATUS,
   PAYOUT_STATUS,
   TRANSACTION_TYPES,
 } = require("../config/paymentConstants");
+
+const DROPOFF_WINDOW_MS = 36 * 60 * 60 * 1000;
 
 const transactionService =
   require("./transactionService");
 
 
   const walletService =
-    require("./wallet");
+    require("./walletService");
 
 
 /*
@@ -1047,6 +1050,135 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
+      READ WALLETS AND LEDGERS
+      ===================================================
+
+      Firestore requires every transaction.get() call to
+      happen before any transaction.update()/create()/set()
+      call in the same transaction. This function used to
+      violate that (wallet/ledger reads were attempted after
+      the stock-deduction writes below, and per-seller inside
+      a single bundled read+write helper, which breaks the
+      moment an order has 2+ sellers). All per-seller reads
+      needed anywhere below are batched here instead, mirroring
+      the productReads pattern above.
+      ===================================================
+      */
+
+      const walletReads =
+        [];
+
+      const sellerHoldRefs =
+        [];
+
+      const commissionReads =
+        [];
+
+      for (
+        const seller
+        of sellerBreakdown
+      ) {
+
+        const walletRef =
+          db
+            .collection(
+              COLLECTIONS.WALLETS
+            )
+            .doc(
+              seller.sellerId
+            );
+
+        const walletSnapshot =
+          await transaction.get(
+            walletRef
+          );
+
+        walletReads.push({
+
+          ref:
+            walletRef,
+
+          snapshot:
+            walletSnapshot,
+
+          seller,
+
+        });
+
+
+        const holdRef =
+          db
+            .collection(
+              COLLECTIONS.TRANSACTIONS
+            )
+            .doc(
+              `HOLD_${orderId}_${seller.sellerId}`
+            );
+
+        const holdSnapshot =
+          await transaction.get(
+            holdRef
+          );
+
+        sellerHoldRefs.push({
+
+          ref:
+            holdRef,
+
+          snapshot:
+            holdSnapshot,
+
+          seller,
+
+        });
+
+
+        const commissionRef =
+          db
+            .collection(
+              COLLECTIONS.TRANSACTIONS
+            )
+            .doc(
+              `COMMISSION_${orderId}_${seller.sellerId}`
+            );
+
+        const commissionSnapshot =
+          await transaction.get(
+            commissionRef
+          );
+
+        commissionReads.push({
+
+          ref:
+            commissionRef,
+
+          snapshot:
+            commissionSnapshot,
+
+          seller,
+
+        });
+
+      }
+
+
+      const marketplaceLedgerRef =
+        db
+          .collection(
+            COLLECTIONS.TRANSACTIONS
+          )
+          .doc(
+            `PAYMENT_${payment.paymentId}`
+          );
+
+      const marketplaceLedgerSnap =
+        await transaction.get(
+          marketplaceLedgerRef
+        );
+
+
+      /*
+      ===================================================
       STOCK VALIDATION
       ===================================================
       */
@@ -1155,34 +1287,97 @@ async function processMarketplacePayment({
       */
 
       for (
-    const walletData
-    of walletReads
-) {
+        const walletData
+        of walletReads
+      ) {
 
-    const seller =
-        walletData.seller;
+        const seller =
+          walletData.seller;
 
-    const operation =
-        walletService.holdSellerFundsInTransaction({
+        const heldAmount =
+          walletService.validateAmount(
+            seller.sellerNet,
+            "Seller held amount"
+          );
 
-            transaction,
+        const existingWallet =
+          walletData.snapshot.exists
+            ? walletData.snapshot.data()
+            : null;
 
-            sellerId:
+        const currentPending =
+          walletService.toMoney(
+            existingWallet?.pendingBalance || 0
+          );
+
+        const newPending =
+          walletService.toMoney(
+            currentPending +
+            heldAmount
+          );
+
+        if (
+          walletData.snapshot.exists
+        ) {
+
+          transaction.update(
+
+            walletData.ref,
+
+            {
+
+              pendingBalance:
+                newPending,
+
+              updatedAt:
+                FieldValue.serverTimestamp(),
+
+            }
+
+          );
+
+        } else {
+
+          transaction.set(
+
+            walletData.ref,
+
+            {
+
+              userId:
                 seller.sellerId,
 
-            amount:
-                seller.sellerNet,
+              currency:
+                "KES",
 
-            orderId,
+              availableBalance:
+                0,
 
-            paymentId:
-                payment.paymentId,
+              pendingBalance:
+                newPending,
 
-        });
+              withdrawalBalance:
+                0,
 
-    await operation.read();
+              totalEarned:
+                0,
 
-}
+              totalWithdrawn:
+                0,
+
+              createdAt:
+                FieldValue.serverTimestamp(),
+
+              updatedAt:
+                FieldValue.serverTimestamp(),
+
+            }
+
+          );
+
+        }
+
+      }
 
       /*
       ===================================================
@@ -1349,9 +1544,12 @@ async function processMarketplacePayment({
       */
 
       for (
-        const seller
-        of sellerBreakdown
+        const commissionData
+        of commissionReads
       ) {
+
+        const seller =
+          commissionData.seller;
 
         if (
           seller.commissionAmount <= 0
@@ -1362,23 +1560,11 @@ async function processMarketplacePayment({
         }
 
         const commissionRef =
-          db
-            .collection(
-              COLLECTIONS.TRANSACTIONS
-            )
-            .doc(
-              `COMMISSION_${orderId}_${seller.sellerId}`
-            );
-
-
-        const commissionSnap =
-          await transaction.get(
-            commissionRef
-          );
+          commissionData.ref;
 
 
         if (
-          !commissionSnap.exists
+          !commissionData.snapshot.exists
         ) {
 
           transaction.create(
@@ -1478,6 +1664,110 @@ async function processMarketplacePayment({
         }
 
       );
+
+
+      /*
+      ===================================================
+      CREATE SUB-ORDERS (one per seller)
+      ===================================================
+
+      This is the per-seller fulfillment unit: sellers no
+      longer hand items directly to buyers. Each seller
+      must drop their items at Biashnet within 36 hours,
+      confirmed by the logistics/supply-chain manager (see
+      service/logisticsService.js). Funds for a sub-order
+      are NOT released here — only once the whole order
+      resolves (buyer's final completion code, or the
+      buyer's accept-partial/cancel decision if a seller
+      misses the window). See service/complianceSweepService.js
+      and the resolve-partial endpoint in orderService.js.
+
+      Deterministic ID (SUBORD_{orderId}_{sellerId}) makes
+      this safe even though this whole function is already
+      guarded against double-processing above.
+      ===================================================
+      */
+
+      const dropoffDeadline =
+        new Date(
+          Date.now() +
+          DROPOFF_WINDOW_MS
+        );
+
+      for (
+        const seller
+        of sellerBreakdown
+      ) {
+
+        const subOrderId =
+          `SUBORD_${orderId}_${seller.sellerId}`;
+
+        const subOrderRef =
+          db
+            .collection(
+              COLLECTIONS.SUB_ORDERS
+            )
+            .doc(
+              subOrderId
+            );
+
+        transaction.create(
+
+          subOrderRef,
+
+          {
+
+            subOrderId,
+
+            orderId,
+
+            sellerId:
+              seller.sellerId,
+
+            buyerId:
+              order.buyerId,
+
+            items:
+              (order.items || []).filter(
+                (item) =>
+                  item.sellerId ===
+                  seller.sellerId
+              ),
+
+            grossAmount:
+              seller.grossAmount,
+
+            commissionAmount:
+              seller.commissionAmount,
+
+            sellerNet:
+              seller.sellerNet,
+
+            status:
+              SUB_ORDER_STATUS.PENDING_DROPOFF,
+
+            dropoffDeadline,
+
+            dropoffConfirmedAt:
+              null,
+
+            dropoffConfirmedBy:
+              null,
+
+            nonCompliantNotifiedAt:
+              null,
+
+            createdAt:
+              now,
+
+            updatedAt:
+              now,
+
+          }
+
+        );
+
+      }
 
 
       /*

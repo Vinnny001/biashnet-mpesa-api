@@ -6,6 +6,10 @@ const {
   initiateInvestment,
 } = require("../controller/investmentController");
 
+const {
+  requireAuth,
+} = require("../middleware/auth");
+
 
 /*
 =========================================================
@@ -26,6 +30,7 @@ Firebase user from the Authorization token.
 
 router.post(
   "/investment",
+  requireAuth,
   initiateInvestment
 );
 

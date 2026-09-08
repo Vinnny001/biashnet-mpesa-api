@@ -12,6 +12,7 @@ const {
     PAYMENT_STATUS,
     SELLER_PAYMENT_STATUS,
     PAYOUT_STATUS,
+    SUB_ORDER_STATUS,
 } = require("../config/paymentConstants");
 
 const {
@@ -19,6 +20,18 @@ const {
     verifyCompletionCode,
     normalizeCompletionCode,
 } = require("../utils/codeGenerator");
+
+const {
+    getSubOrdersForOrder,
+} = require("./logisticsService");
+
+const {
+    releaseSubOrder,
+} = require("./subOrderSettlementService");
+
+const {
+    createRefund,
+} = require("./refundService");
 
 
 /*
@@ -1654,6 +1667,700 @@ async function getSellerOrder({
 
 /*
 =========================================================
+GET SELLER ORDERS
+=========================================================
+
+Lets a seller see which orders contain items belonging to
+them — an order can be shared with other sellers (a buyer
+can check out 5 items where only 2 belong to this seller),
+so both the top-level `items` array and `sellerBreakdown`
+(if present) are filtered down to this seller's own entries
+before returning. Nothing belonging to another seller
+(their items, their share of the sale, their identity) is
+exposed.
+
+checkoutService.js writes a `sellerIds` array onto every
+order (one entry per seller present in the cart), which is
+what this query relies on.
+=========================================================
+*/
+
+async function getSellerOrders(
+    sellerId,
+    options = {}
+) {
+
+    if (!sellerId) {
+
+        throw new Error(
+            "Seller ID is required."
+        );
+
+    }
+
+
+    let limit =
+        Number(
+            options.limit || 50
+        );
+
+    if (
+        !Number.isInteger(limit) ||
+        limit <= 0
+    ) {
+
+        limit = 50;
+
+    }
+
+    if (
+        limit > 100
+    ) {
+
+        limit = 100;
+
+    }
+
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .where(
+                "sellerIds",
+                "array-contains",
+                sellerId
+            )
+            .limit(
+                limit
+            )
+            .get();
+
+
+    const orders =
+        snapshot.docs.map(
+            (doc) => {
+
+                const data =
+                    doc.data();
+
+
+                const items =
+                    Array.isArray(data.items)
+                        ? data.items.filter(
+                            (item) =>
+                                item.sellerId === sellerId
+                        )
+                        : [];
+
+
+                const sellerBreakdown =
+                    Array.isArray(data.sellerBreakdown)
+                        ? data.sellerBreakdown.filter(
+                            (seller) =>
+                                seller.sellerId === sellerId
+                        )
+                        : undefined;
+
+
+                return {
+
+                    id:
+                        doc.id,
+
+                    orderId:
+                        data.orderId ||
+                        doc.id,
+
+                    buyerId:
+                        data.buyerId,
+
+                    status:
+                        data.status,
+
+                    paymentStatus:
+                        data.paymentStatus,
+
+                    deliveryAddress:
+                        data.deliveryAddress,
+
+                    buyerPhone:
+                        data.buyerPhone,
+
+                    createdAt:
+                        data.createdAt,
+
+                    updatedAt:
+                        data.updatedAt,
+
+                    items,
+
+                    ...(sellerBreakdown !== undefined
+                        ? { sellerBreakdown }
+                        : {}),
+
+                };
+
+            }
+        );
+
+
+    orders.sort(
+        (a, b) => {
+
+            const getTime =
+                (value) => {
+
+                    if (
+                        value?.toMillis
+                    ) {
+
+                        return value.toMillis();
+
+                    }
+
+
+                    if (
+                        value?.seconds
+                    ) {
+
+                        return (
+                            Number(
+                                value.seconds
+                            ) * 1000
+                        );
+
+                    }
+
+
+                    if (
+                        value
+                    ) {
+
+                        const parsed =
+                            new Date(
+                                value
+                            ).getTime();
+
+
+                        return Number.isFinite(
+                            parsed
+                        )
+                            ? parsed
+                            : 0;
+
+                    }
+
+
+                    return 0;
+
+                };
+
+
+            return (
+                getTime(
+                    b.createdAt
+                ) -
+                getTime(
+                    a.createdAt
+                )
+            );
+
+        }
+    );
+
+
+    return orders;
+
+}
+
+
+/*
+=========================================================
+CANCEL ORDER
+=========================================================
+
+Pre-payment cancellation only. Once an order has moved
+past PENDING_PAYMENT/PAYMENT_INITIATED, money may already
+be in flight (STK sent, or funds held for a seller) and
+cancelling requires refund logic that lives elsewhere
+(service/refundService.js) — this function intentionally
+refuses to touch those states rather than silently doing
+the wrong thing with real money.
+=========================================================
+*/
+
+const CANCELLABLE_STATUSES = [
+
+    ORDER_STATUS.PENDING_PAYMENT,
+
+    ORDER_STATUS.PAYMENT_INITIATED,
+
+];
+
+
+async function cancelOrder({
+
+    orderId,
+
+    userId,
+
+    reason = "",
+
+}) {
+
+    if (!orderId) {
+
+        throw new Error(
+            "Order ID is required."
+        );
+
+    }
+
+    if (!userId) {
+
+        throw new Error(
+            "User ID is required."
+        );
+
+    }
+
+
+    const orderRef =
+        db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .doc(
+                orderId
+            );
+
+    const orderSnap =
+        await orderRef.get();
+
+    if (
+        !orderSnap.exists
+    ) {
+
+        const error =
+            new Error(
+                "Order not found."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+    const order =
+        orderSnap.data();
+
+    if (
+        order.buyerId !== userId
+    ) {
+
+        const error =
+            new Error(
+                "You are not authorized to cancel this order."
+            );
+
+        error.statusCode = 403;
+
+        throw error;
+
+    }
+
+    if (
+        !CANCELLABLE_STATUSES.includes(
+            order.status
+        )
+    ) {
+
+        const error =
+            new Error(
+                "This order has already been paid and can no longer be self-cancelled. Contact support for a refund."
+            );
+
+        error.statusCode = 400;
+
+        throw error;
+
+    }
+
+    await orderRef.update({
+
+        status:
+            ORDER_STATUS.CANCELLED,
+
+        cancelledAt:
+            FieldValue.serverTimestamp(),
+
+        cancelReason:
+            reason || null,
+
+        updatedAt:
+            FieldValue.serverTimestamp(),
+
+    });
+
+    return {
+
+        orderId,
+
+        status:
+            ORDER_STATUS.CANCELLED,
+
+    };
+
+}
+
+
+/*
+=========================================================
+RESOLVE PARTIAL FULFILLMENT
+=========================================================
+
+Called by the buyer once complianceSweepService has
+flagged their order (customerDecisionRequired: true)
+because at least one seller missed their 36h drop-off
+window.
+
+decision === "cancel":
+    Full refund via refundService.createRefund. Every
+    sub-order is marked CANCELLED. Nothing here was
+    released yet (see the delayed-release design in
+    subOrderSettlementService.js), so this never needs to
+    claw back money from a compliant seller.
+
+decision === "accept_partial":
+    Every AT_BIASHNET sub-order is released in full to its
+    seller. Every NON_COMPLIANT sub-order is refunded to
+    the buyer (partial refund) and marked REFUNDED. Order
+    status becomes PARTIALLY_FULFILLED.
+=========================================================
+*/
+
+async function resolvePartial({
+
+    orderId,
+
+    userId,
+
+    decision,
+
+}) {
+
+    if (!orderId) {
+
+        throw new Error(
+            "Order ID is required."
+        );
+
+    }
+
+    if (!userId) {
+
+        throw new Error(
+            "User ID is required."
+        );
+
+    }
+
+    if (
+        decision !== "cancel" &&
+        decision !== "accept_partial"
+    ) {
+
+        throw new Error(
+            "Decision must be either \"cancel\" or \"accept_partial\"."
+        );
+
+    }
+
+    const orderRef =
+        db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .doc(
+                orderId
+            );
+
+    const orderSnap =
+        await orderRef.get();
+
+    if (
+        !orderSnap.exists
+    ) {
+
+        const error =
+            new Error(
+                "Order not found."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+    const order =
+        orderSnap.data();
+
+    if (
+        order.buyerId !== userId
+    ) {
+
+        const error =
+            new Error(
+                "You are not authorized to resolve this order."
+            );
+
+        error.statusCode = 403;
+
+        throw error;
+
+    }
+
+    if (
+        order.customerDecisionRequired !== true
+    ) {
+
+        const error =
+            new Error(
+                "This order does not currently require a decision."
+            );
+
+        error.statusCode = 400;
+
+        throw error;
+
+    }
+
+    const subOrders =
+        await getSubOrdersForOrder(
+            orderId
+        );
+
+    if (
+        decision === "cancel"
+    ) {
+
+        const refund =
+            await createRefund({
+
+                orderId,
+
+                requestedBy:
+                    userId,
+
+                reason:
+                    "One or more sellers did not drop off their item(s) within the compliance window; buyer chose to cancel.",
+
+                refundType:
+                    "FULL",
+
+            });
+
+        const cancellableStatuses = [
+
+            SUB_ORDER_STATUS.PENDING_DROPOFF,
+
+            SUB_ORDER_STATUS.AT_BIASHNET,
+
+            SUB_ORDER_STATUS.NON_COMPLIANT,
+
+        ];
+
+        await Promise.all(
+
+            subOrders
+                .filter(
+                    (subOrder) =>
+                        cancellableStatuses.includes(
+                            subOrder.status
+                        )
+                )
+                .map(
+                    (subOrder) =>
+                        db
+                            .collection(
+                                COLLECTIONS.SUB_ORDERS
+                            )
+                            .doc(
+                                subOrder.subOrderId
+                            )
+                            .update({
+
+                                status:
+                                    SUB_ORDER_STATUS.CANCELLED,
+
+                                updatedAt:
+                                    FieldValue.serverTimestamp(),
+
+                            })
+                )
+
+        );
+
+        await orderRef.update({
+
+            status:
+                ORDER_STATUS.CANCELLED,
+
+            customerDecision:
+                "cancel",
+
+            customerDecisionMadeAt:
+                FieldValue.serverTimestamp(),
+
+            customerDecisionRequired:
+                false,
+
+            updatedAt:
+                FieldValue.serverTimestamp(),
+
+        });
+
+        return {
+
+            orderId,
+
+            decision:
+                "cancel",
+
+            status:
+                ORDER_STATUS.CANCELLED,
+
+            refund,
+
+        };
+
+    }
+
+
+    /*
+    =====================================================
+    ACCEPT PARTIAL
+    =====================================================
+    */
+
+    const released =
+        [];
+
+    const refunded =
+        [];
+
+    for (
+        const subOrder
+        of subOrders
+    ) {
+
+        if (
+            subOrder.status ===
+            SUB_ORDER_STATUS.AT_BIASHNET
+        ) {
+
+            const settled =
+                await releaseSubOrder(
+                    subOrder.subOrderId
+                );
+
+            released.push(
+                settled
+            );
+
+        } else if (
+            subOrder.status ===
+            SUB_ORDER_STATUS.NON_COMPLIANT
+        ) {
+
+            const refund =
+                await createRefund({
+
+                    orderId,
+
+                    requestedBy:
+                        userId,
+
+                    reason:
+                        `Seller ${subOrder.sellerId} did not drop off their item(s) within the compliance window.`,
+
+                    amount:
+                        subOrder.grossAmount,
+
+                    refundType:
+                        "PARTIAL",
+
+                });
+
+            await db
+                .collection(
+                    COLLECTIONS.SUB_ORDERS
+                )
+                .doc(
+                    subOrder.subOrderId
+                )
+                .update({
+
+                    status:
+                        SUB_ORDER_STATUS.REFUNDED,
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                });
+
+            refunded.push(
+                refund
+            );
+
+        }
+
+    }
+
+    await orderRef.update({
+
+        status:
+            ORDER_STATUS.PARTIALLY_FULFILLED,
+
+        customerDecision:
+            "accept_partial",
+
+        customerDecisionMadeAt:
+            FieldValue.serverTimestamp(),
+
+        customerDecisionRequired:
+            false,
+
+        updatedAt:
+            FieldValue.serverTimestamp(),
+
+    });
+
+    return {
+
+        orderId,
+
+        decision:
+            "accept_partial",
+
+        status:
+            ORDER_STATUS.PARTIALLY_FULFILLED,
+
+        released,
+
+        refunded,
+
+    };
+
+}
+
+
+/*
+=========================================================
 EXPORTS
 =========================================================
 */
@@ -1673,6 +2380,10 @@ module.exports = {
     getBuyerOrders,
 
     getSellerOrder,
+
+    getSellerOrders,
+
+    resolvePartial,
 
 
     /*
@@ -1704,5 +2415,14 @@ module.exports = {
     */
 
     completeOrderWithCode,
+
+
+    /*
+    -----------------------------------------------------
+    CANCELLATION
+    -----------------------------------------------------
+    */
+
+    cancelOrder,
 
 };

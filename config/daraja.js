@@ -266,13 +266,26 @@ function validateB2CConfig() {
     };
 
 
+    /*
+    A missing BACKEND_BASE_URL doesn't make b2cTimeoutUrl/
+    b2cResultUrl empty — they're template literals, so it
+    produces the literal string "undefined/api/webhooks/...",
+    which the plain !value check below would NOT catch. Treat
+    any URL containing the literal "undefined" as missing too.
+    */
+    const isMissing =
+        (value) =>
+            !value ||
+            String(value).includes("undefined");
+
+
     const missing =
         Object.entries(
             required
         )
             .filter(
                 ([, value]) =>
-                    !value
+                    isMissing(value)
             )
             .map(
                 ([key]) =>

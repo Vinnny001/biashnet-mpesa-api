@@ -1,3 +1,19 @@
+/*
+=========================================================
+ORPHANED — NOT WIRED INTO server.js
+=========================================================
+
+Only referenced by ../routes/adminActual.js, which is
+itself never required by server.js. This file DOES write
+real, live documents into the "expenses" Firestore
+collection (confirmed non-empty) — do not create a NEW
+collection with that same name elsewhere in the codebase
+(the Employees/HR/Payroll/Expenses finance module added
+separately uses "financeExpenses" specifically to avoid
+colliding with this).
+=========================================================
+*/
+
 const { db } = require("../config/firebase");
 const { FieldValue } = require("firebase-admin/firestore");
 

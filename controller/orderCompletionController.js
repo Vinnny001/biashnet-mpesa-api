@@ -1,6 +1,6 @@
 const {
   getBuyerCompletionCode,
-  verifyOrderCompletionCode,
+  verifyCompletionCode: verifyCompletionCodeService,
 } = require("../service/orderCompletionService");
 
 
@@ -67,7 +67,12 @@ async function getCompletionCode(
 
 /*
 =========================================================
-SELLER VERIFY COMPLETION CODE
+LOGISTICS VERIFY COMPLETION CODE
+
+Confirms the FINAL Biashnet -> buyer handoff. Called by
+the logistics/supply-chain manager (or admin), not a
+seller — sellers confirm their own leg (drop-off at
+Biashnet) separately via logisticsController.confirmDropoff.
 =========================================================
 */
 
@@ -78,8 +83,8 @@ async function verifyCompletionCode(
 
   try {
 
-    const sellerId =
-      req.user.uid;
+    const confirmedBy =
+      req.employee.id;
 
     const {
       orderId,
@@ -103,11 +108,11 @@ async function verifyCompletionCode(
     }
 
     const result =
-      await verifyOrderCompletionCode({
+      await verifyCompletionCodeService({
 
         orderId,
 
-        sellerId,
+        confirmedBy,
 
         code,
 

@@ -10,11 +10,11 @@ const {
 
 
 const {
-    createOrderController,
     getOrderController,
     getMyOrdersController,
     getSellerOrdersController,
     cancelOrderController,
+    resolvePartialController,
 } = require("../controller/orderController");
 
 
@@ -44,38 +44,14 @@ Firestore
 
 /*
 =========================================================
-CREATE ORDER
-=========================================================
+NOTE — ORDER CREATION
 
-POST
-
-/api/orders
-
-Body:
-
-{
-    "listingId": "LISTING_ID",
-    "quantity": 1,
-    "buyerPhone": "0712345678",
-    "deliveryAddress": "Juja",
-    "deliveryMethod": "PICKUP"
-}
-
-IMPORTANT:
-
-buyerId is NOT accepted from Android.
-
-It comes from:
-
-req.user.uid
+No POST / here. Orders are created via
+POST /api/payments/checkout (route/checkoutRoutes.js),
+the real cart-aware, multi-seller order-creation path.
+See controller/orderController.js for the full rationale.
 =========================================================
 */
-
-router.post(
-    "/",
-    requireAuth,
-    createOrderController
-);
 
 
 /*
@@ -151,6 +127,31 @@ router.post(
     "/:orderId/cancel",
     requireAuth,
     cancelOrderController
+);
+
+
+/*
+=========================================================
+RESOLVE PARTIAL FULFILLMENT
+=========================================================
+
+POST
+
+/api/orders/:orderId/resolve-partial
+
+Body:
+
+{ "decision": "accept_partial" | "cancel" }
+
+Only usable once the order has been flagged for a buyer
+decision after a seller missed their 36h drop-off window.
+=========================================================
+*/
+
+router.post(
+    "/:orderId/resolve-partial",
+    requireAuth,
+    resolvePartialController
 );
 
 

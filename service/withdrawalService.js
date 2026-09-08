@@ -1750,6 +1750,299 @@ async function failWithdrawal({
 
 /*
 =========================================================
+CANCEL WITHDRAWAL
+=========================================================
+
+User-initiated cancellation. Unlike failWithdrawal() (which
+handles a B2C attempt that Safaricom rejected/failed), this
+is only allowed while the withdrawal is still PENDING — i.e.
+before a B2C request has actually been sent. Once it moves
+to PROCESSING, the seller can no longer self-cancel; the
+B2C result (success or failure) will resolve it instead.
+
+Reuses the same "return locked funds to availableBalance"
+logic as failWithdrawal() rather than duplicating it.
+=========================================================
+*/
+
+async function cancelWithdrawal({
+
+    withdrawalId,
+
+    userId,
+
+}) {
+
+    if (!withdrawalId) {
+
+        throw new Error(
+            "Withdrawal ID is required."
+        );
+
+    }
+
+    if (!userId) {
+
+        throw new Error(
+            "User ID is required."
+        );
+
+    }
+
+
+    const withdrawalRef =
+        getWithdrawalRef(
+            withdrawalId
+        );
+
+
+    let result;
+
+
+    await db.runTransaction(
+        async (transaction) => {
+
+            const withdrawalSnap =
+                await transaction.get(
+                    withdrawalRef
+                );
+
+
+            if (
+                !withdrawalSnap.exists
+            ) {
+
+                const error =
+                    new Error(
+                        "Withdrawal not found."
+                    );
+
+                error.statusCode = 404;
+
+                throw error;
+
+            }
+
+
+            const withdrawal =
+                withdrawalSnap.data();
+
+
+            if (
+                withdrawal.userId !== userId
+            ) {
+
+                const error =
+                    new Error(
+                        "You are not authorized to cancel this withdrawal."
+                    );
+
+                error.statusCode = 403;
+
+                throw error;
+
+            }
+
+
+            if (
+                withdrawal.status !==
+                PAYOUT_STATUS.PENDING
+            ) {
+
+                const error =
+                    new Error(
+                        "This withdrawal is already being processed and can no longer be cancelled."
+                    );
+
+                error.statusCode = 400;
+
+                throw error;
+
+            }
+
+
+            const amount =
+                validateAmount(
+                    withdrawal.amount
+                );
+
+
+            const walletRef =
+                getWalletRef(
+                    withdrawal.userId
+                );
+
+
+            const walletSnap =
+                await transaction.get(
+                    walletRef
+                );
+
+
+            if (
+                !walletSnap.exists
+            ) {
+
+                throw new Error(
+                    "Seller wallet not found."
+                );
+
+            }
+
+
+            const wallet =
+                walletSnap.data();
+
+
+            const availableBalance =
+                toMoney(
+                    wallet.availableBalance
+                );
+
+
+            const withdrawalBalance =
+                toMoney(
+                    wallet.withdrawalBalance
+                );
+
+
+            if (
+                withdrawalBalance <
+                amount
+            ) {
+
+                throw new Error(
+
+                    `Insufficient withdrawal lock. ` +
+                    `Locked: KES ${withdrawalBalance}. ` +
+                    `Required: KES ${amount}.`
+
+                );
+
+            }
+
+
+            const newAvailableBalance =
+                toMoney(
+                    availableBalance +
+                    amount
+                );
+
+
+            const newWithdrawalBalance =
+                toMoney(
+                    withdrawalBalance -
+                    amount
+                );
+
+
+            transaction.update(
+                walletRef,
+                {
+
+                    availableBalance:
+                        newAvailableBalance,
+
+                    withdrawalBalance:
+                        newWithdrawalBalance,
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                }
+            );
+
+
+            transaction.update(
+                withdrawalRef,
+                {
+
+                    status:
+                        "CANCELLED",
+
+                    payoutStatus:
+                        "CANCELLED",
+
+                    locked:
+                        false,
+
+                    fundsLocked:
+                        false,
+
+                    cancelledAt:
+                        FieldValue.serverTimestamp(),
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                }
+            );
+
+
+            if (
+                withdrawal.transactionId
+            ) {
+
+                const ledgerRef =
+                    getTransactionRef(
+                        withdrawal.transactionId
+                    );
+
+
+                transaction.update(
+                    ledgerRef,
+                    {
+
+                        status:
+                            "CANCELLED",
+
+                        payoutStatus:
+                            "CANCELLED",
+
+                        updatedAt:
+                            FieldValue.serverTimestamp(),
+
+                    }
+                );
+
+            }
+
+
+            result = {
+
+                success:
+                    true,
+
+                withdrawalId,
+
+                status:
+                    "CANCELLED",
+
+                availableBalance:
+                    newAvailableBalance,
+
+                withdrawalBalance:
+                    newWithdrawalBalance,
+
+            };
+
+        }
+    );
+
+
+    console.log(
+        "🚫 BIASHNET WITHDRAWAL CANCELLED:",
+        result
+    );
+
+
+    return result;
+
+}
+
+
+/*
+=========================================================
 GET WITHDRAWAL
 =========================================================
 */
@@ -1891,6 +2184,8 @@ module.exports = {
     completeWithdrawal,
 
     failWithdrawal,
+
+    cancelWithdrawal,
 
     getWithdrawal,
 

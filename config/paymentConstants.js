@@ -131,11 +131,54 @@ const ORDER_STATUS = {
     COMPLETED:
         "COMPLETED",
 
+    /*
+     * Some sub-orders released/delivered, at least one
+     * sub-order was non-compliant and refunded — the buyer
+     * chose to accept the available items rather than
+     * cancel the whole order.
+     */
+    PARTIALLY_FULFILLED:
+        "PARTIALLY_FULFILLED",
+
     CANCELLED:
         "CANCELLED",
 
     REFUNDED:
         "REFUNDED",
+
+};
+
+
+/*
+=========================================================
+SUB-ORDER STATUS
+=========================================================
+
+One marketplaceSubOrders doc per seller per order. See
+service/logisticsService.js and
+service/complianceSweepService.js.
+=========================================================
+*/
+
+const SUB_ORDER_STATUS = {
+
+    PENDING_DROPOFF:
+        "PENDING_DROPOFF",
+
+    AT_BIASHNET:
+        "AT_BIASHNET",
+
+    NON_COMPLIANT:
+        "NON_COMPLIANT",
+
+    RELEASED:
+        "RELEASED",
+
+    REFUNDED:
+        "REFUNDED",
+
+    CANCELLED:
+        "CANCELLED",
 
 };
 
@@ -426,6 +469,8 @@ module.exports = {
     PAYMENT_STATUS,
 
     ORDER_STATUS,
+
+    SUB_ORDER_STATUS,
 
     SELLER_PAYMENT_STATUS,
 

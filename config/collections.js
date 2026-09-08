@@ -13,6 +13,9 @@ const COLLECTIONS = {
     ORDERS:
         "marketplaceOrders",
 
+    SUB_ORDERS:
+        "marketplaceSubOrders",
+
     MARKETPLACE_RECEIPTS:
   "marketplaceReceipts",
 
