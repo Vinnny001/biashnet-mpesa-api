@@ -1,9 +1,10 @@
 const {
-    getOrder,
+    getBuyerOrder,
     getBuyerOrders,
     getSellerOrders,
     cancelOrder,
     resolvePartial,
+    removeOrderItem,
 } = require("../service/orderService");
 
 
@@ -111,24 +112,14 @@ async function getOrderController(req, res) {
 
 
         const order =
-            await getOrder(
+            await getBuyerOrder({
+
                 orderId,
-                userId
-            );
 
-
-        if (!order) {
-
-            return res.status(404).json({
-
-                success: false,
-
-                message:
-                    "Order not found."
+                buyerId:
+                    userId,
 
             });
-
-        }
 
 
         return res.status(200).json({
@@ -147,8 +138,14 @@ async function getOrderController(req, res) {
             error
         );
 
+        const statusCode =
+            error.message === "Order not found."
+                ? 404
+                : error.message?.includes("not authorized")
+                    ? 403
+                    : 400;
 
-        return res.status(400).json({
+        return res.status(statusCode).json({
 
             success: false,
 
@@ -439,6 +436,112 @@ async function cancelOrderController(req, res) {
 
 /*
 =========================================================
+REMOVE ITEM FROM AN UNPAID ORDER
+=========================================================
+
+DELETE
+
+/api/orders/:orderId/items/:listingId
+
+Buyer-only, and only while the order is still unpaid —
+see orderService.removeOrderItem for the full rationale.
+=========================================================
+*/
+
+async function removeOrderItemController(req, res) {
+
+    try {
+
+        const buyerId =
+            req.user?.uid;
+
+
+        if (!buyerId) {
+
+            return res.status(401).json({
+
+                success: false,
+
+                message:
+                    "Authenticated user not found.",
+
+            });
+
+        }
+
+
+        const {
+            orderId,
+            listingId,
+        } = req.params;
+
+
+        if (!orderId || !listingId) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    "Order ID and listing ID are required.",
+
+            });
+
+        }
+
+
+        const result =
+            await removeOrderItem({
+
+                orderId,
+
+                buyerId,
+
+                listingId,
+
+            });
+
+
+        return res.status(200).json({
+
+            success: true,
+
+            ...result,
+
+        });
+
+
+    } catch (error) {
+
+        console.error(
+            "❌ Remove order item controller error:",
+            error
+        );
+
+        const statusCode =
+            error.message === "Order not found."
+                ? 404
+                : error.message?.includes("not authorized")
+                    ? 403
+                    : 400;
+
+        return res.status(statusCode).json({
+
+            success: false,
+
+            message:
+                error.message ||
+                "Unable to remove item from order.",
+
+        });
+
+    }
+
+}
+
+
+/*
+=========================================================
 RESOLVE PARTIAL FULFILLMENT
 =========================================================
 
@@ -565,6 +668,8 @@ module.exports = {
     getSellerOrdersController,
 
     cancelOrderController,
+
+    removeOrderItemController,
 
     resolvePartialController,
 

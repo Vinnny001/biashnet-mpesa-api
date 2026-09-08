@@ -2085,4 +2085,6 @@ module.exports = {
 
     getCheckout,
 
+    isProductAvailable,
+
 };

@@ -33,6 +33,14 @@ const {
     createRefund,
 } = require("./refundService");
 
+const {
+    isProductAvailable,
+} = require("./checkoutService");
+
+const {
+    money,
+} = require("../utils/money");
+
 
 /*
 =========================================================
@@ -1390,7 +1398,439 @@ async function getBuyerOrder({
     });
 
 
+    /*
+    =====================================================
+    ITEM AVAILABILITY
+
+    Only relevant while the order is still payable — a
+    buyer resuming an unpaid order needs to know which
+    items still exist and are purchasable BEFORE they hit
+    "Complete Payment" (checkout re-validates this anyway,
+    but silently failing there is a bad experience when the
+    buyer could just remove the stale item first).
+    =====================================================
+    */
+
+    const payableStatuses = [
+
+        ORDER_STATUS.PENDING_PAYMENT,
+
+        ORDER_STATUS.PAYMENT_INITIATED,
+
+    ];
+
+    if (
+        payableStatuses.includes(order.status) &&
+        Array.isArray(order.items) &&
+        order.items.length > 0
+    ) {
+
+        const productSnapshots =
+            await Promise.all(
+                order.items.map(
+                    (item) =>
+                        db
+                            .collection(COLLECTIONS.PRODUCTS)
+                            .doc(item.listingId)
+                            .get()
+                )
+            );
+
+        order.items =
+            order.items.map(
+                (item, index) => {
+
+                    const snapshot =
+                        productSnapshots[index];
+
+                    const available =
+                        snapshot.exists &&
+                        isProductAvailable(
+                            snapshot.data()
+                        );
+
+                    return {
+
+                        ...item,
+
+                        available,
+
+                    };
+
+                }
+            );
+
+    }
+
+
     return order;
+
+}
+
+
+/*
+=========================================================
+REMOVE ITEM FROM AN UNPAID ORDER
+=========================================================
+
+Buyers can remove (but not add) items from their own
+order while it's still unpaid — e.g. one item turned out
+to be unavailable, or they simply changed their mind.
+Removing the last remaining item cancels the order
+outright rather than leaving an empty payable order
+behind. Per-item totals were already computed and stored
+by checkoutService at creation time, so this only ever
+re-sums what's left — it never re-prices anything.
+=========================================================
+*/
+
+async function removeOrderItem({
+
+    orderId,
+
+    buyerId,
+
+    listingId,
+
+}) {
+
+    if (!orderId) {
+
+        throw new Error(
+            "Order ID is required."
+        );
+
+    }
+
+    if (!buyerId) {
+
+        throw new Error(
+            "Buyer ID is required."
+        );
+
+    }
+
+    if (!listingId) {
+
+        throw new Error(
+            "Listing ID is required."
+        );
+
+    }
+
+
+    const orderRef =
+        db
+            .collection(COLLECTIONS.ORDERS)
+            .doc(orderId);
+
+
+    return db.runTransaction(
+        async (transaction) => {
+
+            const snapshot =
+                await transaction.get(
+                    orderRef
+                );
+
+            if (!snapshot.exists) {
+
+                throw new Error(
+                    "Order not found."
+                );
+
+            }
+
+            const order =
+                snapshot.data();
+
+            await verifyBuyer({
+
+                order,
+
+                buyerId,
+
+            });
+
+            const editableStatuses = [
+
+                ORDER_STATUS.PENDING_PAYMENT,
+
+                ORDER_STATUS.PAYMENT_INITIATED,
+
+            ];
+
+            if (
+                !editableStatuses.includes(
+                    order.status
+                )
+            ) {
+
+                throw new Error(
+                    `This order can no longer be edited. Current status: ${order.status}.`
+                );
+
+            }
+
+            const items =
+                Array.isArray(order.items)
+                    ? order.items
+                    : [];
+
+            const itemExists =
+                items.some(
+                    (item) =>
+                        item.listingId ===
+                        listingId
+                );
+
+            if (!itemExists) {
+
+                throw new Error(
+                    "That item is not part of this order."
+                );
+
+            }
+
+            const remainingItems =
+                items.filter(
+                    (item) =>
+                        item.listingId !==
+                        listingId
+                );
+
+            /*
+            -------------------------------------------------
+            LAST ITEM REMOVED — CANCEL THE ORDER
+            -------------------------------------------------
+            */
+
+            if (remainingItems.length === 0) {
+
+                const cancelledUpdate = {
+
+                    status:
+                        ORDER_STATUS.CANCELLED,
+
+                    items: [],
+
+                    sellerBreakdown: [],
+
+                    sellerIds: [],
+
+                    cancelledAt:
+                        FieldValue.serverTimestamp(),
+
+                    cancelReason:
+                        "All items removed by buyer before payment.",
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                };
+
+                transaction.update(
+                    orderRef,
+                    cancelledUpdate
+                );
+
+                return {
+
+                    orderId,
+
+                    ...cancelledUpdate,
+
+                };
+
+            }
+
+
+            /*
+            -------------------------------------------------
+            RE-SUM REMAINING ITEMS
+            -------------------------------------------------
+
+            No re-pricing — every remaining item already
+            carries the itemTotal/commissionAmount/
+            sellerGross/sellerNet checkout computed for it.
+            -------------------------------------------------
+            */
+
+            const subtotal =
+                money(
+                    remainingItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.itemTotal || 0),
+                        0
+                    )
+                );
+
+            const commissionAmount =
+                money(
+                    remainingItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.commissionAmount || 0),
+                        0
+                    )
+                );
+
+            const sellerGross =
+                money(
+                    remainingItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.sellerGross || 0),
+                        0
+                    )
+                );
+
+            const sellerNet =
+                money(
+                    remainingItems.reduce(
+                        (sum, item) =>
+                            sum + Number(item.sellerNet || 0),
+                        0
+                    )
+                );
+
+            const deliveryFee =
+                money(
+                    order.deliveryFee || 0
+                );
+
+            const buyerTotal =
+                money(
+                    subtotal + deliveryFee
+                );
+
+
+            /*
+            -------------------------------------------------
+            RE-GROUP SELLER BREAKDOWN
+
+            Sellers with no remaining items are dropped
+            entirely; existing seller display fields
+            (name/phone/payout status) are preserved from
+            the original breakdown.
+            -------------------------------------------------
+            */
+
+            const bySeller =
+                new Map();
+
+            for (
+                const item of remainingItems
+            ) {
+
+                const key =
+                    item.sellerId;
+
+                if (!bySeller.has(key)) {
+
+                    const existing =
+                        (order.sellerBreakdown || []).find(
+                            (entry) =>
+                                entry.sellerId === key
+                        );
+
+                    bySeller.set(key, {
+
+                        sellerId: key,
+
+                        sellerName:
+                            existing?.sellerName || null,
+
+                        sellerPhone:
+                            existing?.sellerPhone || null,
+
+                        grossAmount: 0,
+
+                        commissionAmount: 0,
+
+                        sellerNet: 0,
+
+                        sellerPaymentStatus:
+                            existing?.sellerPaymentStatus ||
+                            SELLER_PAYMENT_STATUS.NOT_RELEASED,
+
+                        payoutStatus:
+                            existing?.payoutStatus ||
+                            PAYOUT_STATUS.NOT_RELEASED,
+
+                    });
+
+                }
+
+                const entry =
+                    bySeller.get(key);
+
+                entry.grossAmount =
+                    money(
+                        entry.grossAmount +
+                        Number(item.sellerGross || 0)
+                    );
+
+                entry.commissionAmount =
+                    money(
+                        entry.commissionAmount +
+                        Number(item.commissionAmount || 0)
+                    );
+
+                entry.sellerNet =
+                    money(
+                        entry.sellerNet +
+                        Number(item.sellerNet || 0)
+                    );
+
+            }
+
+            const sellerBreakdown =
+                Array.from(
+                    bySeller.values()
+                );
+
+            const sellerIds =
+                Array.from(
+                    bySeller.keys()
+                );
+
+            const update = {
+
+                items: remainingItems,
+
+                subtotal,
+
+                commissionAmount,
+
+                sellerGross,
+
+                sellerNet,
+
+                buyerTotal,
+
+                sellerBreakdown,
+
+                sellerIds,
+
+                updatedAt:
+                    FieldValue.serverTimestamp(),
+
+            };
+
+            transaction.update(
+                orderRef,
+                update
+            );
+
+            return {
+
+                orderId,
+
+                ...update,
+
+            };
+
+        }
+    );
 
 }
 
@@ -2424,5 +2864,14 @@ module.exports = {
     */
 
     cancelOrder,
+
+
+    /*
+    -----------------------------------------------------
+    EDITING AN UNPAID ORDER
+    -----------------------------------------------------
+    */
+
+    removeOrderItem,
 
 };

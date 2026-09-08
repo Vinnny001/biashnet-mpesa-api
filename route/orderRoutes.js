@@ -14,6 +14,7 @@ const {
     getMyOrdersController,
     getSellerOrdersController,
     cancelOrderController,
+    removeOrderItemController,
     resolvePartialController,
 } = require("../controller/orderController");
 
@@ -127,6 +128,26 @@ router.post(
     "/:orderId/cancel",
     requireAuth,
     cancelOrderController
+);
+
+
+/*
+=========================================================
+REMOVE ITEM FROM AN UNPAID ORDER
+=========================================================
+
+DELETE
+
+/api/orders/:orderId/items/:listingId
+
+Buyer-only, only while the order is still unpaid.
+=========================================================
+*/
+
+router.delete(
+    "/:orderId/items/:listingId",
+    requireAuth,
+    removeOrderItemController
 );
 
 
