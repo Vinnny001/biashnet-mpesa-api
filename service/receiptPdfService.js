@@ -1,4 +1,8 @@
+const path = require("path");
 const PDFDocument = require("pdfkit");
+
+const LOGO_PATH =
+  path.join(__dirname, "..", "assets", "logo.jpg");
 
 
 /*
@@ -67,19 +71,43 @@ function streamReceiptPdf(receipt, res) {
 
   /*
   -------------------------------------------------------
-  HEADER
+  HEADER (logo + name/title alongside it)
   -------------------------------------------------------
   */
+
+  const logoSize = 60;
+  const headerTop = doc.y;
+
+  try {
+
+    doc.image(
+      LOGO_PATH,
+      50,
+      headerTop,
+      { width: logoSize, height: logoSize }
+    );
+
+  } catch {
+
+    /*
+    Missing/unreadable logo file must never break receipt
+    generation — fall back to text-only header.
+    */
+
+  }
 
   doc
     .fontSize(20)
     .fillColor("#0F766E")
-    .text("BIASHNET", { continued: false });
+    .text("BIASHNET", 50 + logoSize + 15, headerTop + 6);
 
   doc
     .fontSize(12)
     .fillColor("#000000")
-    .text("Payment Receipt", { align: "left" });
+    .text("Payment Receipt", 50 + logoSize + 15, headerTop + 32);
+
+  doc.x = 50;
+  doc.y = headerTop + logoSize + 10;
 
   doc.moveDown(1);
 
