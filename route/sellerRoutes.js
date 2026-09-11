@@ -90,6 +90,26 @@ router.get(
     sellerController.getSummary
 );
 
+
+/*
+=========================================================
+SELLER WALLET
+=========================================================
+
+GET /api/seller/wallet
+
+Withdrawable balance plus funds still held in escrow.
+Withdrawals themselves live at /api/withdrawals.
+=========================================================
+*/
+
+router.get(
+    "/wallet",
+    requireAuth,
+    sellerAuth,
+    sellerController.getWallet
+);
+
 /*
 =========================================================
 SELLER FOLLOWERS

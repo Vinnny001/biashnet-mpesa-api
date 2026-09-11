@@ -4,6 +4,14 @@ const {
     getSubOrdersForSeller,
 } = require("../service/logisticsService");
 
+const {
+    getWallet: getMarketplaceWallet,
+} = require("../service/walletService");
+
+const {
+    MARKETPLACE_WALLET_OWNER_TYPES,
+} = require("../config/collections");
+
 
 /*
 =========================================================
@@ -693,6 +701,65 @@ GET /api/seller/summary
 =========================================================
 */
 
+/*
+=========================================================
+SELLER WALLET
+=========================================================
+
+GET /api/seller/wallet
+
+The seller's own marketplace wallet. Explicitly the SELLER
+wallet — a buyer wallet is a separate pot of money even
+for the same person (see marketplaceWalletId in
+config/collections.js), so seller earnings must never be
+read through a buyer surface or vice versa.
+
+availableBalance  withdrawable now
+pendingBalance    held in escrow until the buyer's
+                  completion code is verified
+=========================================================
+*/
+
+async function getWallet(
+    req,
+    res
+) {
+
+    try {
+
+        const sellerId =
+            getSellerId(
+                req
+            );
+
+        const wallet =
+            await getMarketplaceWallet(
+                sellerId,
+                MARKETPLACE_WALLET_OWNER_TYPES.SELLER
+            );
+
+        return res.json({
+
+            success:
+                true,
+
+            wallet:
+                wallet || null,
+
+        });
+
+    } catch (error) {
+
+        return handleError(
+            res,
+            error
+        );
+
+    }
+
+}
+
+
 async function getSummary(
     req,
     res
@@ -986,6 +1053,8 @@ module.exports = {
     getDashboard,
 
     getSummary,
+
+    getWallet,
     getFollowStatus,
 followSeller,
 unfollowSeller,

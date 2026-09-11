@@ -305,12 +305,14 @@ function normalizeWalletData(
 ======================================================== */
 
 async function getWallet(
-    userId
+    userId,
+    ownerType = MARKETPLACE_WALLET_OWNER_TYPES.SELLER
 ) {
 
     const walletRef =
         getWalletRef(
-            userId
+            userId,
+            ownerType
         );
 
     const walletSnap =

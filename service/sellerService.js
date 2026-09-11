@@ -2773,6 +2773,20 @@ async function getDashboard(
     =====================================================
     FINANCIAL STATISTICS
     =====================================================
+
+    ONLY PAID ORDERS COUNT AS SALES.
+
+    Every order document carries a sellerBreakdown from the
+    moment it is created — including orders the buyer
+    abandoned or whose STK push failed. Summing all of them
+    reports money the seller never made and can never
+    withdraw, which does not reconcile against the wallet.
+
+    An order counts here once the buyer's payment actually
+    succeeded; whether the funds are still in escrow or
+    already released is a separate question, answered by
+    the wallet's pendingBalance/availableBalance.
+    =====================================================
     */
 
     let grossSales = 0;
@@ -2785,6 +2799,20 @@ async function getDashboard(
     for (
         const order of orders
     ) {
+
+        const paid =
+            String(
+                order.paymentStatus || ""
+            ).toUpperCase() ===
+            "SUCCESSFUL";
+
+
+        if (!paid) {
+
+            continue;
+
+        }
+
 
         grossSales +=
             Number(
@@ -2910,8 +2938,27 @@ async function getSummary(
     let sellerNet = 0;
 
 
+    /*
+    Same rule as getDashboard — an unpaid or failed order is
+    not a sale, so it must not inflate the totals.
+    */
+
     orders.orders.forEach(
         order => {
+
+            const paid =
+                String(
+                    order.paymentStatus || ""
+                ).toUpperCase() ===
+                "SUCCESSFUL";
+
+
+            if (!paid) {
+
+                return;
+
+            }
+
 
             grossSales +=
                 Number(
