@@ -5,6 +5,8 @@ const {
 
 const { getFinanceWallet } = require("../service/financeWalletService");
 
+const { FINANCE_OWNER_TYPES } = require("../config/financeConstants");
+
 
 /*
 =========================================================
@@ -20,7 +22,7 @@ async function ledger(req, res) {
 
         const transactions = await getInvestorLedger(investorId);
 
-        const wallet = await getFinanceWallet(investorId);
+        const wallet = await getFinanceWallet(investorId, FINANCE_OWNER_TYPES.INVESTOR);
 
         return res.status(200).json({ success: true, wallet, transactions });
 

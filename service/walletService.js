@@ -5,6 +5,8 @@ const {
 
 const {
     COLLECTIONS,
+    MARKETPLACE_WALLET_OWNER_TYPES,
+    marketplaceWalletId,
 } = require("../config/collections");
 
 
@@ -168,7 +170,8 @@ function validateAmount(
 ======================================================== */
 
 function getWalletRef(
-    userId
+    userId,
+    ownerType = MARKETPLACE_WALLET_OWNER_TYPES.SELLER
 ) {
 
     if (!userId) {
@@ -179,12 +182,19 @@ function getWalletRef(
 
     }
 
+    /*
+    Defaults to the SELLER wallet: every caller in this service is
+    seller/escrow flow, and seller wallets keep the legacy bare-uid
+    key. A buyer wallet must be asked for explicitly so buyer funds
+    can never land in a seller pot (or vice versa).
+    */
+
     return db
         .collection(
             COLLECTIONS.WALLETS
         )
         .doc(
-            userId
+            marketplaceWalletId(userId, ownerType)
         );
 
 }

@@ -29,6 +29,11 @@ const {
   releaseSubOrder,
 } = require("./subOrderSettlementService");
 
+const {
+  notifySellerOrderCompleted,
+  notifyBuyerOrderCompleted,
+} = require("./notificationService");
+
 
 /*
 =========================================================
@@ -1402,6 +1407,39 @@ async function verifyCompletionCode({
         settlementErrors.length,
     }
   );
+
+
+  /*
+  =======================================================
+  NOTIFICATIONS
+
+  One "funds released" notification per seller actually
+  settled just now (skip any alreadyReleased hit, so a
+  retried/duplicate call never re-notifies), plus one
+  "order completed" notification to the buyer regardless
+  of settlement outcome — the buyer's delivery is
+  confirmed either way. A notification failure must never
+  affect the completion/settlement result already recorded
+  above.
+  =======================================================
+  */
+
+  await Promise.all(
+    settlements
+      .filter((settled) => !settled.alreadyReleased)
+      .map((settled) =>
+        notifySellerOrderCompleted({
+          sellerId: settled.sellerId,
+          orderId,
+          amount: settled.sellerNet,
+        }).catch(() => {})
+      )
+  );
+
+  await notifyBuyerOrderCompleted({
+    buyerId: order.buyerId,
+    orderId,
+  }).catch(() => {});
 
 
   /*

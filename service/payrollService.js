@@ -2,7 +2,7 @@ const {
     db,
 } = require("../config/firebase");
 
-const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID } = require("../config/financeCollections");
+const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID, COMPANY_WALLET_OWNER_ID, financeWalletId } = require("../config/financeCollections");
 
 const {
     APPROVAL_LEVEL,
@@ -83,7 +83,7 @@ async function postStipendPayout(employeeId, amount) {
 
     await debitFinanceWallet({
 
-        ownerId: COMPANY_WALLET_ID,
+        ownerId: COMPANY_WALLET_OWNER_ID,
 
         ownerType: FINANCE_OWNER_TYPES.PLATFORM,
 
@@ -117,7 +117,7 @@ async function postStipendPayout(employeeId, amount) {
 
         fromType: FINANCE_OWNER_TYPES.PLATFORM,
 
-        toId: employeeId,
+        toId: financeWalletId(employeeId, FINANCE_OWNER_TYPES.EMPLOYEE),
 
         toType: FINANCE_OWNER_TYPES.EMPLOYEE,
 

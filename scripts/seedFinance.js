@@ -31,7 +31,7 @@ require("dotenv").config();
 
 const { db, FieldValue } = require("../config/firebase");
 
-const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID } = require("../config/financeCollections");
+const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID, COMPANY_WALLET_OWNER_ID, financeWalletId } = require("../config/financeCollections");
 
 const { EMPLOYMENT_STATUS } = require("../config/financeConstants");
 
@@ -124,7 +124,7 @@ async function seed() {
 
         await companyWalletRef.set({
 
-            ownerId: COMPANY_WALLET_ID,
+            ownerId: COMPANY_WALLET_OWNER_ID,
 
             ownerType: "platform",
 
@@ -258,7 +258,7 @@ async function seed() {
 
         await db
             .collection(FINANCE_COLLECTIONS.FINANCE_WALLET_ACCOUNTS)
-            .doc(employee.uid)
+            .doc(financeWalletId(employee.uid, "employee"))
             .set(
                 {
                     ownerId: employee.uid,

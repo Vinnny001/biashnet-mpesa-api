@@ -228,6 +228,9 @@ async function confirmDropoff({
                 sellerId:
                     subOrder.sellerId,
 
+                buyerId:
+                    subOrder.buyerId,
+
                 orderId:
                     subOrder.orderId,
 
@@ -264,6 +267,33 @@ async function confirmDropoff({
         ).catch(
             () => {}
         );
+
+        if (
+            result.buyerId
+        ) {
+
+            await createNotification(
+                result.buyerId,
+                {
+
+                    title:
+                        "Item arrived at Biashnet",
+
+                    message:
+                        `A seller's item for your order ${result.orderId} has arrived at Biashnet. It'll be delivered to you once all sellers on the order have dropped off.`,
+
+                    type:
+                        "SELLER_DROPOFF_RECEIVED",
+
+                    orderId:
+                        result.orderId,
+
+                }
+            ).catch(
+                () => {}
+            );
+
+        }
 
     }
 

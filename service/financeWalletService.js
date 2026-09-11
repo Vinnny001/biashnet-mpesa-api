@@ -5,6 +5,7 @@ const {
 
 const {
     FINANCE_COLLECTIONS,
+    financeWalletId,
 } = require("../config/financeCollections");
 
 
@@ -23,9 +24,16 @@ This is a SEPARATE collection (financeWalletAccounts) from
 the marketplace's own marketplaceWallets. It exists so the
 live seller wallet system is never touched by this module.
 
-One document per owner:
+One document per (owner, ownerType) PAIR:
 
-financeWalletAccounts/{ownerId}
+financeWalletAccounts/{ownerType}_{ownerId}
+
+NOT one per owner — the same person can be both an
+employee and an investor, and those are two separate pots
+of money with their own balances. Keying by uid alone made
+one person's stipend and their investor contributions the
+same wallet. Always pass ownerType; see financeWalletId()
+in config/financeCollections.js.
 
 ownerId is either:
 
@@ -33,8 +41,8 @@ ownerId is either:
 - an investor UID (referencing, never modifying, the
   existing investor/{uid} document)
 - a lenderId
-- the constant COMPANY_WALLET_ID ("company"), representing
-  BIASHNET's own treasury for this ledger
+- COMPANY_WALLET_OWNER_ID ("company"), BIASHNET's own
+  treasury for this ledger
 
 WALLET MODEL
 
@@ -91,17 +99,11 @@ function validateAmount(amount, field = "Amount") {
    WALLET REFERENCE
 ======================================================== */
 
-function getFinanceWalletRef(ownerId) {
-
-    if (!ownerId) {
-
-        throw new Error("Owner ID is required.");
-
-    }
+function getFinanceWalletRef(ownerId, ownerType) {
 
     return db
         .collection(FINANCE_COLLECTIONS.FINANCE_WALLET_ACCOUNTS)
-        .doc(ownerId);
+        .doc(financeWalletId(ownerId, ownerType));
 
 }
 
@@ -166,9 +168,9 @@ function normalizeFinanceWallet(wallet = {}) {
    GET WALLET
 ======================================================== */
 
-async function getFinanceWallet(ownerId) {
+async function getFinanceWallet(ownerId, ownerType) {
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     const walletSnap = await walletRef.get();
 
@@ -195,7 +197,7 @@ async function getFinanceWallet(ownerId) {
 
 async function createFinanceWalletIfNotExists(ownerId, ownerType) {
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     const walletSnap = await walletRef.get();
 
@@ -227,7 +229,7 @@ async function createFinanceWalletIfNotExists(ownerId, ownerType) {
 
         wallet: {
 
-            id: ownerId,
+            id: walletRef.id,
 
             ...wallet,
 
@@ -269,7 +271,7 @@ function creditFinanceWalletInTransaction({
 
     const creditAmount = validateAmount(amount, "Credit amount");
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     return {
 
@@ -411,7 +413,7 @@ function debitFinanceWalletInTransaction({
 
     const debitAmount = validateAmount(amount, "Debit amount");
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     return {
 
@@ -531,6 +533,8 @@ function lockFinanceWithdrawalInTransaction({
 
     ownerId,
 
+    ownerType,
+
     amount,
 
     withdrawalId,
@@ -551,7 +555,7 @@ function lockFinanceWithdrawalInTransaction({
 
     }
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     return {
 
@@ -624,7 +628,7 @@ function lockFinanceWithdrawalInTransaction({
 }
 
 
-async function lockFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
+async function lockFinanceWithdrawal({ ownerId, ownerType, amount, withdrawalId }) {
 
     let result;
 
@@ -635,6 +639,8 @@ async function lockFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
             transaction,
 
             ownerId,
+
+            ownerType,
 
             amount,
 
@@ -655,7 +661,7 @@ async function lockFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
    COMPLETE WITHDRAWAL
 ======================================================== */
 
-async function completeFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
+async function completeFinanceWithdrawal({ ownerId, ownerType, amount, withdrawalId }) {
 
     const withdrawalAmount = validateAmount(amount, "Withdrawal amount");
 
@@ -665,7 +671,7 @@ async function completeFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
 
     }
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     let result;
 
@@ -732,7 +738,7 @@ async function completeFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
    RESTORE FAILED WITHDRAWAL
 ======================================================== */
 
-async function restoreFailedFinanceWithdrawal({ ownerId, amount, withdrawalId }) {
+async function restoreFailedFinanceWithdrawal({ ownerId, ownerType, amount, withdrawalId }) {
 
     const withdrawalAmount = validateAmount(amount, "Withdrawal amount");
 
@@ -742,7 +748,7 @@ async function restoreFailedFinanceWithdrawal({ ownerId, amount, withdrawalId })
 
     }
 
-    const walletRef = getFinanceWalletRef(ownerId);
+    const walletRef = getFinanceWalletRef(ownerId, ownerType);
 
     let result;
 

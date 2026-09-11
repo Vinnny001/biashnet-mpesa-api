@@ -6,6 +6,8 @@ const {
 
 const {
     COLLECTIONS,
+    MARKETPLACE_WALLET_OWNER_TYPES,
+    marketplaceWalletId,
 } = require("../config/collections");
 
 
@@ -248,7 +250,10 @@ WALLET REFERENCE
 =========================================================
 */
 
-function getWalletRef(userId) {
+function getWalletRef(
+    userId,
+    ownerType = MARKETPLACE_WALLET_OWNER_TYPES.SELLER
+) {
 
     if (!userId) {
 
@@ -263,7 +268,7 @@ function getWalletRef(userId) {
             COLLECTIONS.WALLETS
         )
         .doc(
-            userId
+            marketplaceWalletId(userId, ownerType)
         );
 
 }

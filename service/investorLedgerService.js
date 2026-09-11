@@ -1,6 +1,7 @@
 const {
     FINANCE_COLLECTIONS,
     COMPANY_WALLET_ID,
+    financeWalletId,
 } = require("../config/financeCollections");
 
 const {
@@ -94,7 +95,7 @@ async function recordContribution({
 
         direction: FINANCE_DIRECTIONS.RECEIVED,
 
-        fromId: investorId,
+        fromId: financeWalletId(investorId, FINANCE_OWNER_TYPES.INVESTOR),
 
         fromType: FINANCE_OWNER_TYPES.INVESTOR,
 
@@ -145,7 +146,7 @@ async function postInvestorPayout(investorId, amount, approvedBy) {
 
         fromType: FINANCE_OWNER_TYPES.PLATFORM,
 
-        toId: investorId,
+        toId: financeWalletId(investorId, FINANCE_OWNER_TYPES.INVESTOR),
 
         toType: FINANCE_OWNER_TYPES.INVESTOR,
 
@@ -224,7 +225,14 @@ async function applyInvestorPayout(payload, request) {
 
 async function getInvestorLedger(investorId) {
 
-    return getFinanceLedgerForOwner(investorId);
+    /*
+    Ledger is scoped to the investor WALLET, not the person — an
+    employee-and-investor must not see their payroll in their
+    investor ledger.
+    */
+    return getFinanceLedgerForOwner(
+        financeWalletId(investorId, FINANCE_OWNER_TYPES.INVESTOR)
+    );
 
 }
 

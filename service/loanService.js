@@ -3,7 +3,7 @@ const {
     FieldValue,
 } = require("../config/firebase");
 
-const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID } = require("../config/financeCollections");
+const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID, COMPANY_WALLET_OWNER_ID, financeWalletId } = require("../config/financeCollections");
 
 const {
     LOAN_STATUS,
@@ -201,7 +201,7 @@ async function applyLoanEntry(payload) {
 
         await creditFinanceWallet({
 
-            ownerId: COMPANY_WALLET_ID,
+            ownerId: COMPANY_WALLET_OWNER_ID,
 
             ownerType: FINANCE_OWNER_TYPES.PLATFORM,
 
@@ -219,7 +219,7 @@ async function applyLoanEntry(payload) {
 
             direction: FINANCE_DIRECTIONS.RECEIVED,
 
-            fromId: loan.lenderId,
+            fromId: financeWalletId(loan.lenderId, FINANCE_OWNER_TYPES.LENDER),
 
             fromType: FINANCE_OWNER_TYPES.LENDER,
 
@@ -251,7 +251,7 @@ async function applyLoanEntry(payload) {
 
         await debitFinanceWallet({
 
-            ownerId: COMPANY_WALLET_ID,
+            ownerId: COMPANY_WALLET_OWNER_ID,
 
             ownerType: FINANCE_OWNER_TYPES.PLATFORM,
 
@@ -275,7 +275,7 @@ async function applyLoanEntry(payload) {
 
             fromType: FINANCE_OWNER_TYPES.PLATFORM,
 
-            toId: loan.lenderId,
+            toId: financeWalletId(loan.lenderId, FINANCE_OWNER_TYPES.LENDER),
 
             toType: FINANCE_OWNER_TYPES.LENDER,
 

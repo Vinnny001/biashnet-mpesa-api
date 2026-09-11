@@ -7,6 +7,10 @@ const {
   COLLECTIONS,
 } = require("../config/collections");
 
+const {
+  sendPush,
+} = require("./pushService");
+
 
 /*
 =========================================================
@@ -102,6 +106,17 @@ async function createNotification(
       FieldValue.serverTimestamp(),
 
   });
+
+
+  sendPush(
+    userId,
+    {
+      title: data.title,
+      message: data.message,
+    }
+  ).catch(
+    () => {}
+  );
 
 
   return {

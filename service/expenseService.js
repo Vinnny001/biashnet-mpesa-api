@@ -3,7 +3,7 @@ const {
     FieldValue,
 } = require("../config/firebase");
 
-const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID } = require("../config/financeCollections");
+const { FINANCE_COLLECTIONS, COMPANY_WALLET_ID, COMPANY_WALLET_OWNER_ID } = require("../config/financeCollections");
 
 const {
     EXPENSE_STATUS,
@@ -60,7 +60,7 @@ async function postExpenseDebit(expenseRef, expense) {
 
     await debitFinanceWallet({
 
-        ownerId: COMPANY_WALLET_ID,
+        ownerId: COMPANY_WALLET_OWNER_ID,
 
         ownerType: FINANCE_OWNER_TYPES.PLATFORM,
 

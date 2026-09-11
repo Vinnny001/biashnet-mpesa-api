@@ -75,7 +75,14 @@ async function createFinanceWithdrawal({ ownerId, ownerType, amount, phoneNumber
 
     const withdrawalId = generateWithdrawalId();
 
-    await lockFinanceWithdrawal({ ownerId, amount: numericAmount, withdrawalId });
+    const walletOwnerType = ownerType || FINANCE_OWNER_TYPES.EMPLOYEE;
+
+    await lockFinanceWithdrawal({
+        ownerId,
+        ownerType: walletOwnerType,
+        amount: numericAmount,
+        withdrawalId,
+    });
 
     const withdrawalRef = getWithdrawalRef(withdrawalId);
 
@@ -137,6 +144,7 @@ async function createFinanceWithdrawal({ ownerId, ownerType, amount, phoneNumber
 
         await restoreFailedFinanceWithdrawal({
             ownerId,
+            ownerType: walletOwnerType,
             amount: numericAmount,
             withdrawalId,
         });
@@ -221,6 +229,8 @@ async function completeFinanceWithdrawalFromCallback({ withdrawalId, success, re
 
             ownerId: withdrawal.ownerId,
 
+            ownerType: withdrawal.ownerType,
+
             amount: withdrawal.amount,
 
             withdrawalId,
@@ -242,6 +252,8 @@ async function completeFinanceWithdrawalFromCallback({ withdrawalId, success, re
         await restoreFailedFinanceWithdrawal({
 
             ownerId: withdrawal.ownerId,
+
+            ownerType: withdrawal.ownerType,
 
             amount: withdrawal.amount,
 

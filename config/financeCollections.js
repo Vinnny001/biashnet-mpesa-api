@@ -71,13 +71,57 @@ revenue credited into this ledger credit it.
 =========================================================
 */
 
-const COMPANY_WALLET_ID = "company";
+const COMPANY_WALLET_OWNER_ID = "company";
+
+
+/*
+=========================================================
+WALLET ACCOUNT ID
+=========================================================
+
+A wallet belongs to an (owner, ownerType) PAIR, not just
+an owner. The same person can be both an employee and an
+investor, and those are two separate pots of money with
+separate balances — keying wallets by uid alone made one
+person's employee stipend and investor contributions the
+same wallet.
+
+This id is also what transaction records reference as
+fromId/toId, so each wallet's ledger stays its own.
+=========================================================
+*/
+
+function financeWalletId(ownerId, ownerType) {
+
+    if (!ownerId) {
+
+        throw new Error("Owner ID is required.");
+
+    }
+
+    if (!ownerType) {
+
+        throw new Error("Owner type is required to identify a wallet.");
+
+    }
+
+    return `${ownerType}_${ownerId}`;
+
+}
+
+
+const COMPANY_WALLET_ID =
+    financeWalletId(COMPANY_WALLET_OWNER_ID, "platform");
 
 
 module.exports = {
 
     FINANCE_COLLECTIONS,
 
+    COMPANY_WALLET_OWNER_ID,
+
     COMPANY_WALLET_ID,
+
+    financeWalletId,
 
 };

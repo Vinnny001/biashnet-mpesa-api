@@ -7,6 +7,10 @@ const {
   COLLECTIONS,
 } = require("../config/collections");
 
+const {
+  sendPush,
+} = require("./pushService");
+
 
 /*
 =========================================================
@@ -53,6 +57,13 @@ async function createNotification({
       FieldValue.serverTimestamp(),
 
   });
+
+  sendPush(
+    userId,
+    { title, message }
+  ).catch(
+    () => {}
+  );
 
   return {
     notificationId: ref.id,
@@ -153,7 +164,8 @@ async function notifySellerNewOrder({
 
     message:
       `You have received a new BIASHNET order ${orderId} ` +
-      `worth KES ${Number(amount).toLocaleString()}.`,
+      `worth KES ${Number(amount).toLocaleString()}. ` +
+      `Please deliver the item(s) to the Biashnet store for verification.`,
 
     data: {
       orderId,

@@ -41,6 +41,10 @@ const {
     money,
 } = require("../utils/money");
 
+const {
+    createNotification,
+} = require("./notificationService");
+
 
 /*
 =========================================================
@@ -2744,6 +2748,22 @@ const CANCELLABLE_STATUSES = [
 
 ];
 
+/*
+Sub-order states that are still safe to cancel outright —
+nothing has been released to that seller yet, so cancelling
+never needs to claw back money. Same list resolvePartial's
+own "cancel" decision already uses.
+*/
+const CANCELLABLE_SUB_ORDER_STATUSES = [
+
+    SUB_ORDER_STATUS.PENDING_DROPOFF,
+
+    SUB_ORDER_STATUS.AT_BIASHNET,
+
+    SUB_ORDER_STATUS.NON_COMPLIANT,
+
+];
+
 
 async function cancelOrder({
 
@@ -2817,15 +2837,76 @@ async function cancelOrder({
 
     }
 
+    /*
+    =====================================================
+    PRE-PAYMENT CANCEL
+    =====================================================
+
+    No money was ever taken — just cancel, no refund
+    involved.
+    =====================================================
+    */
+
     if (
-        !CANCELLABLE_STATUSES.includes(
+        CANCELLABLE_STATUSES.includes(
             order.status
         )
     ) {
 
+        await orderRef.update({
+
+            status:
+                ORDER_STATUS.CANCELLED,
+
+            cancelledAt:
+                FieldValue.serverTimestamp(),
+
+            cancelReason:
+                reason || null,
+
+            updatedAt:
+                FieldValue.serverTimestamp(),
+
+        });
+
+        return {
+
+            orderId,
+
+            status:
+                ORDER_STATUS.CANCELLED,
+
+            refunded:
+                false,
+
+        };
+
+    }
+
+
+    /*
+    =====================================================
+    PAID BUT NOT YET FULFILLED — CANCEL + FULL REFUND
+    =====================================================
+
+    Payment succeeded, but the buyer doesn't have to wait
+    for the 36h non-compliance sweep to get their money
+    back — if nothing has actually been released to a
+    seller yet, cancelling now and refunding in full is
+    always safe (mirrors resolvePartial's own "cancel"
+    decision, just buyer-initiated instead of
+    sweep-triggered).
+    =====================================================
+    */
+
+    if (
+        order.status !==
+        ORDER_STATUS.PAID
+    ) {
+
         const error =
             new Error(
-                "This order has already been paid and can no longer be self-cancelled. Contact support for a refund."
+                "This order can no longer be self-cancelled. Contact support for a refund."
             );
 
         error.statusCode = 400;
@@ -2833,6 +2914,82 @@ async function cancelOrder({
         throw error;
 
     }
+
+    const subOrders =
+        await getSubOrdersForOrder(
+            orderId
+        );
+
+    const hasReleasedSubOrder =
+        subOrders.some(
+            (subOrder) =>
+                subOrder.status ===
+                SUB_ORDER_STATUS.RELEASED
+        );
+
+    if (
+        hasReleasedSubOrder
+    ) {
+
+        const error =
+            new Error(
+                "Funds have already been released to at least one seller on this order — it can no longer be self-cancelled. Contact support."
+            );
+
+        error.statusCode = 400;
+
+        throw error;
+
+    }
+
+    const refund =
+        await createRefund({
+
+            orderId,
+
+            requestedBy:
+                userId,
+
+            reason:
+                reason ||
+                "Buyer cancelled before fulfillment.",
+
+            refundType:
+                "FULL",
+
+        });
+
+    const cancellableSubOrders =
+        subOrders.filter(
+            (subOrder) =>
+                CANCELLABLE_SUB_ORDER_STATUSES.includes(
+                    subOrder.status
+                )
+        );
+
+    await Promise.all(
+
+        cancellableSubOrders.map(
+            (subOrder) =>
+                db
+                    .collection(
+                        COLLECTIONS.SUB_ORDERS
+                    )
+                    .doc(
+                        subOrder.subOrderId
+                    )
+                    .update({
+
+                        status:
+                            SUB_ORDER_STATUS.CANCELLED,
+
+                        updatedAt:
+                            FieldValue.serverTimestamp(),
+
+                    })
+        )
+
+    );
 
     await orderRef.update({
 
@@ -2843,12 +3000,64 @@ async function cancelOrder({
             FieldValue.serverTimestamp(),
 
         cancelReason:
-            reason || null,
+            reason || "Buyer cancelled before fulfillment.",
 
         updatedAt:
             FieldValue.serverTimestamp(),
 
     });
+
+    await Promise.all(
+
+        cancellableSubOrders
+            .filter(
+                (subOrder) =>
+                    subOrder.sellerId
+            )
+            .map(
+                (subOrder) =>
+                    createNotification(
+                        subOrder.sellerId,
+                        {
+
+                            title:
+                                "Order cancelled",
+
+                            message:
+                                `Order ${orderId} was cancelled by the buyer before fulfillment. No drop-off is needed for this order.`,
+
+                            type:
+                                "ORDER_CANCELLED",
+
+                            orderId,
+
+                        }
+                    ).catch(
+                        () => {}
+                    )
+            )
+
+    );
+
+    await createNotification(
+        order.buyerId,
+        {
+
+            title:
+                "Order cancelled — refund initiated",
+
+            message:
+                `Your order ${orderId} has been cancelled and a full refund of KES ${Number(order.buyerTotal || 0).toLocaleString()} has been initiated.`,
+
+            type:
+                "ORDER_CANCELLED_REFUNDED",
+
+            orderId,
+
+        }
+    ).catch(
+        () => {}
+    );
 
     return {
 
@@ -2856,6 +3065,11 @@ async function cancelOrder({
 
         status:
             ORDER_STATUS.CANCELLED,
+
+        refunded:
+            true,
+
+        refund,
 
     };
 

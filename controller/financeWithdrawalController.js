@@ -8,6 +8,10 @@ const {
     getFinanceWallet,
 } = require("../service/financeWalletService");
 
+const {
+    FINANCE_OWNER_TYPES,
+} = require("../config/financeConstants");
+
 
 /*
 =========================================================
@@ -131,7 +135,16 @@ async function getWallet(req, res) {
 
         }
 
-        const wallet = await getFinanceWallet(ownerId);
+        /*
+        A person can hold more than one finance wallet (employee AND
+        investor are separate pots). The caller says which one it wants;
+        the employee wallet is the default since that's what the work
+        dashboard shows.
+        */
+        const ownerType =
+            req.query?.ownerType || FINANCE_OWNER_TYPES.EMPLOYEE;
+
+        const wallet = await getFinanceWallet(ownerId, ownerType);
 
         return res.status(200).json({ success: true, wallet: wallet || null });
 
