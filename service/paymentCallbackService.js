@@ -651,6 +651,13 @@ async function marketplaceCallback(
             seller.sellerGross ||
             0,
 
+          /*
+          So the seller is told WHICH customer this order
+          is from — they run many at once.
+          */
+          buyerId:
+            order.buyerId,
+
         });
 
       }

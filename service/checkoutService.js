@@ -22,6 +22,10 @@ const {
     calculateCommission,
 } = require("./commissionService");
 
+const {
+    notifyBuyerOrderPlaced,
+} = require("./marketplaceNotificationService");
+
 
 /*
 =========================================================
@@ -1873,6 +1877,40 @@ doorDelivery: doorDelivery === true,
             );
 
         }
+    );
+
+
+    /*
+    =====================================================
+    TELL THE BUYER THE ORDER EXISTS
+    =====================================================
+
+    First stage of the order's life. Sellers are NOT
+    notified here — nothing is owed to them until the
+    money actually arrives, and an abandoned checkout
+    must not put a drop-off in their queue. Their
+    notification comes from the payment callback.
+
+    Fired after the transaction commits and never awaited
+    into the caller's failure path: a notification problem
+    must not fail a checkout that already succeeded.
+    =====================================================
+    */
+
+    notifyBuyerOrderPlaced({
+
+        buyerId,
+
+        orderId,
+
+        itemCount:
+            orderItems.length,
+
+        amount:
+            buyerTotal,
+
+    }).catch(
+        () => {}
     );
 
 

@@ -8,6 +8,7 @@ const orderRoutes = require("./route/orderRoutes");
 const withdrawalRoutes = require("./route/withdrawalRoutes");
 const webhookRoutes = require("./route/webhookRoutes");
 const sellerRoutes = require("./route/sellerRoutes");
+const notificationRoutes = require("./route/notificationRoutes");
 const publicSellerRoutes = require("./route/publicSellerRoutes");
 const receiptRoutes =
   require("./route/receiptRoutes");
@@ -205,6 +206,17 @@ compliance sweep)
 app.use("/api/logistics", logisticsRoutes);
 
 app.use("/api/internal", internalRoutes);
+
+
+/*
+=========================================================
+NOTIFICATIONS
+
+Order-lifecycle notifications for buyers and sellers.
+=========================================================
+*/
+
+app.use("/api/notifications", notificationRoutes);
 
 /*
 =========================================================

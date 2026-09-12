@@ -16,6 +16,16 @@ const {
     createNotification,
 } = require("./notificationService");
 
+const {
+    notifySellerOutForDelivery,
+} = require("./marketplaceNotificationService");
+
+const {
+    getBuyerName,
+    getBuyerIdentity,
+    getSellerIdentity,
+} = require("../utils/displayName");
+
 
 /*
 =========================================================
@@ -463,6 +473,23 @@ async function confirmDropoff({
                 () => null
             );
 
+        /*
+        Name both parties. The seller runs orders for many
+        customers at once, and the buyer's order may have
+        several sellers on it — "a seller's item arrived"
+        is useless when they are waiting on three.
+        */
+
+        const [seller, buyer] =
+            await Promise.all([
+                getSellerIdentity(result.sellerId),
+                getBuyerIdentity(result.buyerId),
+            ]);
+
+        const sellerName = seller.name;
+        const buyerName = buyer.name;
+
+
         await createNotification(
             result.sellerId,
             {
@@ -471,7 +498,7 @@ async function confirmDropoff({
                     "Drop-off confirmed",
 
                 message:
-                    `Biashnet has received your item(s) for order ${result.orderId}. Your funds will be released once the buyer confirms delivery.`,
+                    `${sellerName ? `Dear Seller ${sellerName},` : "Dear Seller,"} Biashnet has received your item(s) for order ${result.orderId}${buyer.label ? ` from ${buyer.label}` : ""}. Your funds will be released once the customer confirms delivery.`,
 
                 type:
                     "DROPOFF_CONFIRMED",
@@ -493,10 +520,12 @@ async function confirmDropoff({
                 {
 
                     title:
-                        "Item arrived at Biashnet",
+                        seller.label
+                            ? `${seller.label} delivered to Biashnet`
+                            : "Item arrived at Biashnet",
 
                     message:
-                        `A seller's item for your order ${result.orderId} has arrived at Biashnet. It'll be delivered to you once all sellers on the order have dropped off.`,
+                        `${buyerName ? `Dear Customer ${buyerName},` : "Dear Customer,"} ${seller.label || "a seller"} has delivered their item(s) for your order ${result.orderId} to Biashnet. It'll be sent to you once every seller on the order has dropped off.`,
 
                     type:
                         "SELLER_DROPOFF_RECEIVED",
@@ -963,28 +992,79 @@ async function markOutForDelivery({
 
     if (
         result &&
-        !result.alreadyDispatched &&
-        result.buyerId
+        !result.alreadyDispatched
     ) {
 
-        await createNotification(
-            result.buyerId,
-            {
+        if (
+            result.buyerId
+        ) {
 
-                title:
-                    "Your order is on the way",
+            const buyerName =
+                await getBuyerName(
+                    result.buyerId
+                );
 
-                message:
-                    `Order ${orderId} has left Biashnet and is out for delivery. Have your completion code ready — you'll give it to the rider on handover.`,
+            await createNotification(
+                result.buyerId,
+                {
 
-                type:
-                    "ORDER_OUT_FOR_DELIVERY",
+                    title:
+                        "Your order is on the way",
 
-                orderId,
+                    message:
+                        `${buyerName ? `Dear Customer ${buyerName},` : "Dear Customer,"} order ${orderId} has left Biashnet and is out for delivery. Have your completion code ready — you'll give it to the rider on handover.`,
 
-            }
-        ).catch(
-            () => {}
+                    type:
+                        "ORDER_OUT_FOR_DELIVERY",
+
+                    orderId,
+
+                }
+            ).catch(
+                () => {}
+            );
+
+        }
+
+
+        /*
+        Every seller on the order hears about it too — one
+        notification each, and only to sellers still in the
+        order (a refunded or cancelled seller is no longer
+        part of this delivery).
+        */
+
+        const sellerIds =
+            Array.from(
+                new Set(
+                    active
+                        .filter(
+                            (subOrder) =>
+                                subOrder.sellerId
+                        )
+                        .map(
+                            (subOrder) =>
+                                subOrder.sellerId
+                        )
+                )
+            );
+
+        await Promise.all(
+            sellerIds.map(
+                (sellerId) =>
+                    notifySellerOutForDelivery({
+
+                        sellerId,
+
+                        orderId,
+
+                        buyerId:
+                            result.buyerId,
+
+                    }).catch(
+                        () => {}
+                    )
+            )
         );
 
     }

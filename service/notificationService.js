@@ -11,6 +11,48 @@ const {
   sendPush,
 } = require("./pushService");
 
+const {
+  getBuyerName,
+  getSellerName,
+  getBuyerIdentity,
+} = require("../utils/displayName");
+
+
+/*
+=========================================================
+SALUTATIONS
+=========================================================
+
+Buyers and sellers are addressed differently so the two
+never read the same, and a person who is both on Biashnet
+can tell at a glance which account a message concerns.
+Mirrors marketplaceNotificationService.
+=========================================================
+*/
+
+async function customerSalutation(buyerId) {
+
+  const name =
+    await getBuyerName(buyerId);
+
+  return name
+    ? `Dear Customer ${name},`
+    : "Dear Customer,";
+
+}
+
+
+async function sellerSalutation(sellerId) {
+
+  const name =
+    await getSellerName(sellerId);
+
+  return name
+    ? `Dear Seller ${name},`
+    : "Dear Seller,";
+
+}
+
 
 /*
 =========================================================
@@ -241,7 +283,7 @@ async function notifyBuyerOrderCompleted({
         "Order Completed",
 
       message:
-        `Your order ${orderId} has been completed successfully.`,
+        `${await customerSalutation(buyerId)} your order ${orderId} has been completed successfully. Thank you for shopping with Biashnet.`,
 
       type:
         "ORDER_COMPLETED",
@@ -269,7 +311,18 @@ async function notifySellerOrderCompleted({
 
   amount,
 
+  buyerId,
+
 }) {
+
+  /*
+  .label, not .name — this identifies the customer TO the
+  seller, so an email handle is an acceptable last resort
+  here in a way it never is in a salutation.
+  */
+
+  const buyerName =
+    (await getBuyerIdentity(buyerId)).label;
 
   return createNotification(
 
@@ -281,7 +334,7 @@ async function notifySellerOrderCompleted({
         "Funds Released",
 
       message:
-        `Order ${orderId} has been completed and your seller funds of KES ${Number(amount).toLocaleString()} have been released.`,
+        `${await sellerSalutation(sellerId)} order ${orderId}${buyerName ? ` from ${buyerName}` : ""} has been completed and your seller funds of KES ${Number(amount).toLocaleString()} have been released to your wallet.`,
 
       type:
         "FUNDS_RELEASED",
@@ -483,6 +536,22 @@ async function getUserNotifications(
   }
 
 
+  /*
+  =======================================================
+  NO COMPOSITE INDEX
+
+  where("userId") + orderBy("createdAt") is a composite
+  index Firestore will refuse the query without, and this
+  one had never been exercised over HTTP, so the failure
+  would only have surfaced the moment the notifications
+  screen went live. Sort in JS instead — the same approach
+  getUserWithdrawals already documents.
+
+  The limit is applied after sorting, so it is genuinely
+  the newest N rather than an arbitrary N.
+  =======================================================
+  */
+
   const snapshot =
     await db
       .collection(
@@ -493,26 +562,153 @@ async function getUserNotifications(
         "==",
         userId
       )
-      .orderBy(
-        "createdAt",
-        "desc"
+      .get();
+
+
+  const notifications =
+    snapshot.docs.map(
+      doc => ({
+
+        id:
+          doc.id,
+
+        ...doc.data(),
+
+      })
+    );
+
+
+  const time =
+    (value) =>
+      value?.toMillis
+        ? value.toMillis()
+        : new Date(
+            value || 0
+          ).getTime();
+
+
+  notifications.sort(
+    (a, b) =>
+      time(b.createdAt) -
+      time(a.createdAt)
+  );
+
+
+  const max =
+    Number(limit) > 0
+      ? Number(limit)
+      : 50;
+
+
+  return notifications.slice(
+    0,
+    max
+  );
+
+}
+
+
+/*
+=========================================================
+MARK EVERY NOTIFICATION READ
+=========================================================
+
+One tap to clear the badge. Batched, because a user who
+has never opened the screen can have a lot of them.
+=========================================================
+*/
+
+async function markAllNotificationsRead(
+  userId
+) {
+
+  if (!userId) {
+
+    throw new Error(
+      "User ID is required."
+    );
+
+  }
+
+
+  const snapshot =
+    await db
+      .collection(
+        COLLECTIONS.NOTIFICATIONS
       )
-      .limit(
-        Number(limit)
+      .where(
+        "userId",
+        "==",
+        userId
+      )
+      .where(
+        "read",
+        "==",
+        false
       )
       .get();
 
 
-  return snapshot.docs.map(
-    doc => ({
+  if (snapshot.empty) {
 
-      id:
-        doc.id,
+    return {
+      success: true,
+      updated: 0,
+    };
 
-      ...doc.data(),
+  }
 
-    })
-  );
+
+  /*
+  Firestore caps a batch at 500 writes.
+  */
+
+  const docs =
+    snapshot.docs;
+
+  let updated = 0;
+
+
+  for (
+    let start = 0;
+    start < docs.length;
+    start += 500
+  ) {
+
+    const batch =
+      db.batch();
+
+    docs
+      .slice(start, start + 500)
+      .forEach(
+        (doc) => {
+
+          batch.update(
+            doc.ref,
+            {
+
+              read: true,
+
+              readAt:
+                FieldValue.serverTimestamp(),
+
+            }
+          );
+
+          updated += 1;
+
+        }
+      );
+
+    await batch.commit();
+
+  }
+
+
+  return {
+    success: true,
+    updated,
+  };
 
 }
 
@@ -540,6 +736,8 @@ module.exports = {
   notifyBuyerPartialFulfillmentChoice,
 
   markNotificationRead,
+
+  markAllNotificationsRead,
 
   getUserNotifications,
 

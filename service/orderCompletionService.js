@@ -1442,6 +1442,7 @@ async function verifyCompletionCode({
           sellerId: settled.sellerId,
           orderId,
           amount: settled.sellerNet,
+          buyerId: order.buyerId,
         }).catch(() => {})
       )
   );

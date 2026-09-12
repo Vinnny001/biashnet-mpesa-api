@@ -45,6 +45,10 @@ const {
     createNotification,
 } = require("./notificationService");
 
+const {
+    getBuyerIdentity,
+} = require("../utils/displayName");
+
 
 /*
 =========================================================
@@ -3034,6 +3038,18 @@ async function cancelOrder({
 
     });
 
+    /*
+    Looked up once and reused across every seller on the
+    order, so a five-seller cancellation is one read, not
+    five. Sellers need to know WHICH customer cancelled —
+    they may have several orders open at the time.
+    */
+
+    const cancellationBuyer =
+        await getBuyerIdentity(
+            order.buyerId
+        );
+
     await Promise.all(
 
         cancellableSubOrders
@@ -3051,7 +3067,7 @@ async function cancelOrder({
                                 "Order cancelled",
 
                             message:
-                                `Order ${orderId} was cancelled by the buyer before fulfillment. No drop-off is needed for this order.`,
+                                `Dear Seller, order ${orderId}${cancellationBuyer.label ? ` from ${cancellationBuyer.label}` : ""} was cancelled by the customer before fulfillment. No drop-off is needed for this order.`,
 
                             type:
                                 "ORDER_CANCELLED",
@@ -3074,7 +3090,7 @@ async function cancelOrder({
                 "Order cancelled — refund initiated",
 
             message:
-                `Your order ${orderId} has been cancelled and a full refund of KES ${Number(order.buyerTotal || 0).toLocaleString()} has been initiated.`,
+                `${cancellationBuyer.name ? `Dear Customer ${cancellationBuyer.name},` : "Dear Customer,"} your order ${orderId} has been cancelled and a full refund of KES ${Number(order.buyerTotal || 0).toLocaleString()} has been initiated.`,
 
             type:
                 "ORDER_CANCELLED_REFUNDED",
