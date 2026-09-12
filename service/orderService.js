@@ -2896,12 +2896,39 @@ async function cancelOrder({
     always safe (mirrors resolvePartial's own "cancel"
     decision, just buyer-initiated instead of
     sweep-triggered).
+
+    This deliberately accepts every pre-handover status,
+    not just PAID. Logistics now advances a paid order
+    through PROCESSING -> READY_FOR_DELIVERY ->
+    OUT_FOR_DELIVERY as sellers drop off and the order is
+    sent out; gating on PAID alone would silently strip
+    the buyer's right to cancel the moment the first
+    seller dropped off, which is exactly when they are
+    still waiting and most likely to want out.
+
+    The real guard on the money is below: no sub-order may
+    already be RELEASED. Funds are only released against
+    the buyer's completion code at handover, so "out for
+    delivery" is still refundable.
     =====================================================
     */
 
+    const SELF_CANCELLABLE_AFTER_PAYMENT = [
+
+        ORDER_STATUS.PAID,
+
+        ORDER_STATUS.PROCESSING,
+
+        ORDER_STATUS.READY_FOR_DELIVERY,
+
+        ORDER_STATUS.OUT_FOR_DELIVERY,
+
+    ];
+
     if (
-        order.status !==
-        ORDER_STATUS.PAID
+        !SELF_CANCELLABLE_AFTER_PAYMENT.includes(
+            order.status
+        )
     ) {
 
         const error =

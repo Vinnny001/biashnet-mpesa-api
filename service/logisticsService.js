@@ -9,6 +9,7 @@ const {
 
 const {
     SUB_ORDER_STATUS,
+    ORDER_STATUS,
 } = require("../config/paymentConstants");
 
 const {
@@ -42,6 +43,208 @@ orderService.resolvePartial and
 service/complianceSweepService.js).
 =========================================================
 */
+
+
+/*
+=========================================================
+ORDER STATUS FOLLOWS SUB-ORDER REALITY
+=========================================================
+
+ORDER_STATUS declares PROCESSING, READY_FOR_DELIVERY and
+OUT_FOR_DELIVERY, and the buyer's tracker renders all
+three, but nothing ever wrote them — an order went from
+PAID straight to COMPLETED and the buyer saw no progress
+while sellers were actually dropping off.
+
+Drop-off is recorded per seller (one sub-order each), so
+the order-level status is derived from them rather than
+stored independently:
+
+    a seller still owes a drop-off   -> PROCESSING
+    every active seller has dropped  -> READY_FOR_DELIVERY
+    logistics dispatches the order   -> OUT_FOR_DELIVERY
+    buyer's completion code verified -> COMPLETED
+
+REFUNDED/CANCELLED sub-orders are excluded from "active":
+a seller who was refunded out of the order must not hold
+the rest of it hostage.
+
+ONLY these three statuses are ever written here, and only
+over one another or PAID. Terminal states (COMPLETED,
+CANCELLED, REFUNDED, PARTIALLY_FULFILLED) are owned by
+orderService/orderCompletionService/complianceSweep and
+are never overwritten.
+=========================================================
+*/
+
+const ORDER_STATUSES_LOGISTICS_MAY_ADVANCE = [
+
+    ORDER_STATUS.PAID,
+
+    ORDER_STATUS.PROCESSING,
+
+    ORDER_STATUS.READY_FOR_DELIVERY,
+
+];
+
+
+const SUB_ORDER_STATUSES_OUT_OF_PLAY = [
+
+    SUB_ORDER_STATUS.REFUNDED,
+
+    SUB_ORDER_STATUS.CANCELLED,
+
+];
+
+
+/*
+Recomputes an order's delivery status from its sub-orders.
+
+Returns the status the order now holds, or null when it
+was left alone (terminal state, or nothing changed).
+*/
+
+async function syncOrderDeliveryStatus(
+    orderId
+) {
+
+    if (!orderId) {
+
+        return null;
+
+    }
+
+    const subOrders =
+        await getSubOrdersForOrder(
+            orderId
+        );
+
+    const active =
+        subOrders.filter(
+            (subOrder) =>
+                !SUB_ORDER_STATUSES_OUT_OF_PLAY.includes(
+                    subOrder.status
+                )
+        );
+
+    if (
+        active.length === 0
+    ) {
+
+        return null;
+
+    }
+
+    const awaitingDropoff =
+        active.some(
+            (subOrder) =>
+                subOrder.status ===
+                SUB_ORDER_STATUS.PENDING_DROPOFF
+        );
+
+    const anyAtBiashnet =
+        active.some(
+            (subOrder) =>
+                subOrder.status ===
+                SUB_ORDER_STATUS.AT_BIASHNET
+        );
+
+    let nextStatus;
+
+    if (
+        awaitingDropoff
+    ) {
+
+        nextStatus =
+            ORDER_STATUS.PROCESSING;
+
+    } else if (
+        anyAtBiashnet
+    ) {
+
+        nextStatus =
+            ORDER_STATUS.READY_FOR_DELIVERY;
+
+    } else {
+
+        /*
+        Everything already released or non-compliant —
+        that outcome belongs to settlement, not logistics.
+        */
+
+        return null;
+
+    }
+
+    const orderRef =
+        db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .doc(
+                orderId
+            );
+
+    let applied = null;
+
+    await db.runTransaction(
+        async (transaction) => {
+
+            const snap =
+                await transaction.get(
+                    orderRef
+                );
+
+            if (!snap.exists) {
+
+                return;
+
+            }
+
+            const current =
+                snap.data().status;
+
+            if (
+                !ORDER_STATUSES_LOGISTICS_MAY_ADVANCE.includes(
+                    current
+                )
+            ) {
+
+                return;
+
+            }
+
+            if (
+                current === nextStatus
+            ) {
+
+                applied = nextStatus;
+
+                return;
+
+            }
+
+            transaction.update(
+                orderRef,
+                {
+
+                    status:
+                        nextStatus,
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                }
+            );
+
+            applied = nextStatus;
+
+        }
+    );
+
+    return applied;
+
+}
 
 
 /* ========================================================
@@ -247,6 +450,19 @@ async function confirmDropoff({
         !result.alreadyConfirmed
     ) {
 
+        /*
+        Move the order itself along so the buyer's tracker
+        reflects the drop-off. Never let a status write
+        fail the confirmation that already committed.
+        */
+
+        result.orderStatus =
+            await syncOrderDeliveryStatus(
+                result.orderId
+            ).catch(
+                () => null
+            );
+
         await createNotification(
             result.sellerId,
             {
@@ -361,6 +577,424 @@ async function listPendingDropoffs() {
 
 
 /* ========================================================
+   LIST ORDERS READY FOR DELIVERY
+======================================================== */
+
+/*
+Orders whose sellers have all dropped off and which are
+waiting for logistics to send them out. Driven off the
+sub-orders rather than the order status so an order that
+predates the status progression still shows up.
+*/
+
+async function listReadyForDelivery() {
+
+    const snapshot =
+        await db
+            .collection(
+                COLLECTIONS.SUB_ORDERS
+            )
+            .where(
+                "status",
+                "==",
+                SUB_ORDER_STATUS.AT_BIASHNET
+            )
+            .get();
+
+    const byOrderId =
+        new Map();
+
+    snapshot.docs.forEach(
+        (document) => {
+
+            const subOrder =
+                document.data();
+
+            const list =
+                byOrderId.get(
+                    subOrder.orderId
+                ) || [];
+
+            list.push({
+
+                id:
+                    document.id,
+
+                ...subOrder,
+
+            });
+
+            byOrderId.set(
+                subOrder.orderId,
+                list
+            );
+
+        }
+    );
+
+    if (
+        byOrderId.size === 0
+    ) {
+
+        return [];
+
+    }
+
+    /*
+    An order is only sendable once NO seller on it still
+    owes a drop-off, so each candidate order is checked
+    against its full sub-order set.
+    */
+
+    const orders = [];
+
+    for (
+        const [orderId, atBiashnet]
+        of byOrderId
+    ) {
+
+        const subOrders =
+            await getSubOrdersForOrder(
+                orderId
+            );
+
+        const stillWaiting =
+            subOrders.some(
+                (subOrder) =>
+                    subOrder.status ===
+                    SUB_ORDER_STATUS.PENDING_DROPOFF
+            );
+
+        if (stillWaiting) {
+
+            continue;
+
+        }
+
+        const orderSnap =
+            await db
+                .collection(
+                    COLLECTIONS.ORDERS
+                )
+                .doc(
+                    orderId
+                )
+                .get();
+
+        const order =
+            orderSnap.exists
+                ? orderSnap.data()
+                : null;
+
+        if (
+            order &&
+            !ORDER_STATUSES_LOGISTICS_MAY_ADVANCE.includes(
+                order.status
+            )
+        ) {
+
+            continue;
+
+        }
+
+        orders.push({
+
+            orderId,
+
+            status:
+                order?.status || null,
+
+            buyerId:
+                order?.buyerId ||
+                atBiashnet[0]?.buyerId ||
+                null,
+
+            buyerPhone:
+                order?.buyerPhone || null,
+
+            deliveryAddress:
+                order?.deliveryAddress || null,
+
+            sellerCount:
+                atBiashnet.length,
+
+            items:
+                atBiashnet.flatMap(
+                    (subOrder) =>
+                        Array.isArray(subOrder.items)
+                            ? subOrder.items
+                            : []
+                ),
+
+            readySince:
+                atBiashnet
+                    .map(
+                        (subOrder) =>
+                            subOrder.dropoffConfirmedAt
+                    )
+                    .filter(
+                        Boolean
+                    )
+                    .sort(
+                        (a, b) => {
+
+                            const time =
+                                (value) =>
+                                    value?.toMillis
+                                        ? value.toMillis()
+                                        : 0;
+
+                            return (
+                                time(b) -
+                                time(a)
+                            );
+
+                        }
+                    )[0] || null,
+
+        });
+
+    }
+
+    return orders;
+
+}
+
+
+/* ========================================================
+   MARK ORDER OUT FOR DELIVERY
+======================================================== */
+
+/*
+The dispatch step: Biashnet has every seller's item and a
+rider is taking the order to the buyer. This moves no
+money — funds are still released only when the buyer's
+completion code is verified on handover.
+*/
+
+async function markOutForDelivery({
+
+    orderId,
+
+    dispatchedBy,
+
+}) {
+
+    if (!orderId) {
+
+        throw new Error(
+            "Order ID is required."
+        );
+
+    }
+
+    if (!dispatchedBy) {
+
+        throw new Error(
+            "Dispatching logistics manager ID is required."
+        );
+
+    }
+
+    const subOrders =
+        await getSubOrdersForOrder(
+            orderId
+        );
+
+    if (
+        subOrders.length === 0
+    ) {
+
+        const error =
+            new Error(
+                "No sub-orders found for this order."
+            );
+
+        error.statusCode = 404;
+
+        throw error;
+
+    }
+
+    const active =
+        subOrders.filter(
+            (subOrder) =>
+                !SUB_ORDER_STATUSES_OUT_OF_PLAY.includes(
+                    subOrder.status
+                )
+        );
+
+    const stillWaiting =
+        active.filter(
+            (subOrder) =>
+                subOrder.status ===
+                SUB_ORDER_STATUS.PENDING_DROPOFF
+        );
+
+    if (
+        stillWaiting.length > 0
+    ) {
+
+        const error =
+            new Error(
+                `${stillWaiting.length} seller(s) on this order have not dropped off yet.`
+            );
+
+        error.statusCode = 400;
+
+        throw error;
+
+    }
+
+    const orderRef =
+        db
+            .collection(
+                COLLECTIONS.ORDERS
+            )
+            .doc(
+                orderId
+            );
+
+    let result;
+
+    await db.runTransaction(
+        async (transaction) => {
+
+            const snap =
+                await transaction.get(
+                    orderRef
+                );
+
+            if (!snap.exists) {
+
+                const error =
+                    new Error(
+                        "Order not found."
+                    );
+
+                error.statusCode = 404;
+
+                throw error;
+
+            }
+
+            const order =
+                snap.data();
+
+            if (
+                order.status ===
+                ORDER_STATUS.OUT_FOR_DELIVERY
+            ) {
+
+                result = {
+
+                    success:
+                        true,
+
+                    alreadyDispatched:
+                        true,
+
+                    orderId,
+
+                    status:
+                        ORDER_STATUS.OUT_FOR_DELIVERY,
+
+                };
+
+                return;
+
+            }
+
+            if (
+                !ORDER_STATUSES_LOGISTICS_MAY_ADVANCE.includes(
+                    order.status
+                )
+            ) {
+
+                const error =
+                    new Error(
+                        `This order cannot be sent out for delivery from status ${order.status}.`
+                    );
+
+                error.statusCode = 400;
+
+                throw error;
+
+            }
+
+            transaction.update(
+                orderRef,
+                {
+
+                    status:
+                        ORDER_STATUS.OUT_FOR_DELIVERY,
+
+                    dispatchedAt:
+                        FieldValue.serverTimestamp(),
+
+                    dispatchedBy,
+
+                    updatedAt:
+                        FieldValue.serverTimestamp(),
+
+                }
+            );
+
+            result = {
+
+                success:
+                    true,
+
+                alreadyDispatched:
+                    false,
+
+                orderId,
+
+                buyerId:
+                    order.buyerId,
+
+                status:
+                    ORDER_STATUS.OUT_FOR_DELIVERY,
+
+            };
+
+        }
+    );
+
+    if (
+        result &&
+        !result.alreadyDispatched &&
+        result.buyerId
+    ) {
+
+        await createNotification(
+            result.buyerId,
+            {
+
+                title:
+                    "Your order is on the way",
+
+                message:
+                    `Order ${orderId} has left Biashnet and is out for delivery. Have your completion code ready — you'll give it to the rider on handover.`,
+
+                type:
+                    "ORDER_OUT_FOR_DELIVERY",
+
+                orderId,
+
+            }
+        ).catch(
+            () => {}
+        );
+
+    }
+
+    return result;
+
+}
+
+
+/* ========================================================
    GET SUB-ORDERS FOR ORDER
 ======================================================== */
 
@@ -451,6 +1085,12 @@ module.exports = {
     confirmDropoff,
 
     listPendingDropoffs,
+
+    listReadyForDelivery,
+
+    markOutForDelivery,
+
+    syncOrderDeliveryStatus,
 
     getSubOrdersForOrder,
 

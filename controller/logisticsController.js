@@ -1,6 +1,8 @@
 const {
     confirmDropoff,
     listPendingDropoffs,
+    listReadyForDelivery,
+    markOutForDelivery,
     getSubOrder,
     getSubOrdersForOrder,
 } = require("../service/logisticsService");
@@ -83,6 +85,85 @@ async function confirm(req, res) {
             message:
                 error.message ||
                 "Unable to confirm drop-off.",
+
+        });
+
+    }
+
+}
+
+
+async function listReady(req, res) {
+
+    try {
+
+        const orders =
+            await listReadyForDelivery();
+
+        return res.status(200).json({
+
+            success: true,
+
+            orders,
+
+        });
+
+    } catch (error) {
+
+        console.error(
+            "❌ List ready-for-delivery controller error:",
+            error
+        );
+
+        return res.status(400).json({
+
+            success: false,
+
+            message:
+                error.message ||
+                "Unable to list orders ready for delivery.",
+
+        });
+
+    }
+
+}
+
+
+async function dispatchOrder(req, res) {
+
+    try {
+
+        const { orderId } = req.params;
+
+        const result =
+            await markOutForDelivery({
+
+                orderId,
+
+                dispatchedBy:
+                    req.employee.id,
+
+            });
+
+        return res.status(200).json({ success: true, ...result });
+
+    } catch (error) {
+
+        console.error(
+            "❌ Out-for-delivery controller error:",
+            error
+        );
+
+        return res.status(
+            error.statusCode || 400
+        ).json({
+
+            success: false,
+
+            message:
+                error.message ||
+                "Unable to send this order out for delivery.",
 
         });
 
@@ -175,6 +256,10 @@ module.exports = {
     listPending,
 
     confirm,
+
+    listReady,
+
+    dispatchOrder,
 
     getOne,
 
