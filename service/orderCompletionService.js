@@ -239,8 +239,18 @@ function validateCodeFormat(
     CODE_LENGTH
   ) {
 
+    /*
+    Say what is actually wrong. This check runs before the
+    order is even looked at, so "Invalid completion code"
+    here reads to the logistics rider as "the buyer gave
+    you the wrong code" when the real problem is that the
+    code is the wrong length — or that the order never had
+    a code at all, a case this early return hides behind a
+    generic message.
+    */
+
     throw new Error(
-      "Invalid completion code."
+      `Completion code must be ${CODE_LENGTH} digits — you entered ${normalized.length}.`
     );
 
   }
