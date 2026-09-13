@@ -17,6 +17,12 @@ const {
   getBuyerIdentity,
 } = require("../utils/displayName");
 
+const {
+  resolveAudience,
+  audienceOf,
+  normalizeAudience,
+} = require("../utils/notificationAudience");
+
 
 /*
 =========================================================
@@ -119,6 +125,23 @@ async function createNotification(
       .doc();
 
 
+  const type =
+    data.type || "GENERAL";
+
+
+  /*
+  Which of the person's accounts this is for. Stored, not
+  just inferred at read time, so the frontend filter and the
+  push tap both see the same answer.
+  */
+
+  const audience =
+    resolveAudience({
+      audience: data.audience,
+      type,
+    });
+
+
   await notificationRef.set({
 
     notificationId:
@@ -132,8 +155,9 @@ async function createNotification(
     message:
       data.message,
 
-    type:
-      data.type || "GENERAL",
+    type,
+
+    audience,
 
     orderId:
       data.orderId || null,
@@ -155,6 +179,12 @@ async function createNotification(
     {
       title: data.title,
       message: data.message,
+      data: {
+        notificationId: notificationRef.id,
+        audience,
+        type,
+        orderId: data.orderId,
+      },
     }
   ).catch(
     () => {}
@@ -524,7 +554,8 @@ GET USER NOTIFICATIONS
 
 async function getUserNotifications(
   userId,
-  limit = 50
+  limit = 50,
+  audience = null
 ) {
 
   if (!userId) {
@@ -565,17 +596,52 @@ async function getUserNotifications(
       .get();
 
 
+  /*
+  =======================================================
+  ONE ACCOUNT'S FEED
+
+  With an audience, only that account's notifications are
+  returned — the seller screen shows seller updates, the
+  work screen shows work updates. The audience is attached
+  to each row either way so the app can route a tap.
+
+  A notification with no determinable audience (written
+  before audiences existed, with an ambiguous type) is kept
+  in every feed: showing it once too often beats hiding it.
+  =======================================================
+  */
+
+  const wanted =
+    normalizeAudience(audience);
+
+
   const notifications =
-    snapshot.docs.map(
-      doc => ({
+    snapshot.docs
+      .map(
+        doc => {
 
-        id:
-          doc.id,
+          const row = {
 
-        ...doc.data(),
+            id:
+              doc.id,
 
-      })
-    );
+            ...doc.data(),
+
+          };
+
+          row.audience =
+            audienceOf(row);
+
+          return row;
+
+        }
+      )
+      .filter(
+        (row) =>
+          !wanted ||
+          !row.audience ||
+          row.audience === wanted
+      );
 
 
   const time =
@@ -619,7 +685,8 @@ has never opened the screen can have a lot of them.
 */
 
 async function markAllNotificationsRead(
-  userId
+  userId,
+  audience = null
 ) {
 
   if (!userId) {
@@ -649,7 +716,32 @@ async function markAllNotificationsRead(
       .get();
 
 
-  if (snapshot.empty) {
+  /*
+  Scoped like the feed: "mark all read" on the seller
+  screen must not silently clear the buyer's unread ones.
+  */
+
+  const wanted =
+    normalizeAudience(audience);
+
+  const docs =
+    snapshot.docs.filter(
+      (doc) => {
+
+        if (!wanted) {
+          return true;
+        }
+
+        const rowAudience =
+          audienceOf(doc.data());
+
+        return !rowAudience || rowAudience === wanted;
+
+      }
+    );
+
+
+  if (docs.length === 0) {
 
     return {
       success: true,
@@ -662,9 +754,6 @@ async function markAllNotificationsRead(
   /*
   Firestore caps a batch at 500 writes.
   */
-
-  const docs =
-    snapshot.docs;
 
   let updated = 0;
 

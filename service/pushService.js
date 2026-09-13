@@ -35,7 +35,28 @@ their own .catch(() => {}) for defense in depth.
 =========================================================
 */
 
-async function sendPush(userId, { title, message }) {
+/*
+ * FCM only accepts string values in `data`, and rejects the whole
+ * message otherwise — so drop empties and stringify the rest.
+ */
+function toFcmData(data = {}) {
+
+  return Object.fromEntries(
+    Object.entries(data)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, value]) => [key, String(value)])
+  );
+
+}
+
+
+/*
+ * `data` rides along with the push and is handed to the app when the
+ * user taps it: audience (which of the person's accounts it concerns),
+ * notificationId, type and orderId. The app uses audience to open the
+ * right account — see front/src/components/common/PushIntentHandler.jsx.
+ */
+async function sendPush(userId, { title, message, data = {} }) {
 
   if (!userId || !title || !message) {
 
@@ -99,6 +120,9 @@ async function sendPush(userId, { title, message }) {
         body: message,
 
       },
+
+      data:
+        toFcmData(data),
 
       /*
       High message priority tells FCM to wake the device and

@@ -17,6 +17,10 @@ const {
   getBuyerIdentity,
 } = require("../utils/displayName");
 
+const {
+  resolveAudience,
+} = require("../utils/notificationAudience");
+
 
 /*
 =========================================================
@@ -96,13 +100,30 @@ async function createNotification({
     .collection(COLLECTIONS.NOTIFICATIONS)
     .doc();
 
+  const resolvedType =
+    type || "GENERAL";
+
+  /*
+  Callers put the audience in data.audience; it is also
+  stored top-level so every notification — from either
+  writer — carries it in the same place.
+  */
+
+  const audience =
+    resolveAudience({
+      audience: data?.audience,
+      type: resolvedType,
+    });
+
   await ref.set({
 
     notificationId: ref.id,
 
     userId,
 
-    type: type || "GENERAL",
+    type: resolvedType,
+
+    audience,
 
     title,
 
@@ -122,7 +143,16 @@ async function createNotification({
 
   sendPush(
     userId,
-    { title, message }
+    {
+      title,
+      message,
+      data: {
+        notificationId: ref.id,
+        audience,
+        type: resolvedType,
+        orderId: data?.orderId,
+      },
+    }
   ).catch(
     () => {}
   );

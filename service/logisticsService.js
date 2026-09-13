@@ -1017,6 +1017,14 @@ async function markOutForDelivery({
                     type:
                         "ORDER_OUT_FOR_DELIVERY",
 
+                    /*
+                    ORDER_OUT_FOR_DELIVERY goes to the buyer AND
+                    every seller, so the type alone can't say
+                    which account this copy belongs to.
+                    */
+                    audience:
+                        "BUYER",
+
                     orderId,
 
                 }

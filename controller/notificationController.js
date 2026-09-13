@@ -90,10 +90,16 @@ async function list(req, res) {
             getUserId(req);
 
 
+        /*
+        ?audience=SELLER etc. — which account's screen is asking.
+        Omitted means every account's notifications.
+        */
+
         const notifications =
             await getUserNotifications(
                 userId,
-                req.query.limit || 50
+                req.query.limit || 50,
+                req.query.audience || null
             );
 
 
@@ -191,7 +197,10 @@ async function markAllRead(req, res) {
 
         const result =
             await markAllNotificationsRead(
-                userId
+                userId,
+                req.query.audience ||
+                req.body?.audience ||
+                null
             );
 
 
