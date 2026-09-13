@@ -108,6 +108,13 @@ async function createNotification({
       type: resolvedType,
     });
 
+  // Account screens are strict — see notificationService.createNotification.
+  if (!audience) {
+    console.warn(
+      `⚠️ Notification "${resolvedType}" for ${userId} has no audience and won't appear on any account's notifications screen.`
+    );
+  }
+
   await ref.set({
 
     notificationId: ref.id,

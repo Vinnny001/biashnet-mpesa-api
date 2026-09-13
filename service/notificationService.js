@@ -140,6 +140,21 @@ async function createNotification(
       type,
     });
 
+  /*
+  Account screens are strict: a notification with no
+  audience shows on none of them. Say so loudly, so a new
+  notification type that forgot to set one is caught
+  instead of silently disappearing.
+  */
+
+  if (!audience) {
+
+    console.warn(
+      `⚠️ Notification "${type}" for ${userId} has no audience and won't appear on any account's notifications screen. Add it to utils/notificationAudience.js or pass an audience.`
+    );
+
+  }
+
 
   await notificationRef.set({
 
@@ -593,14 +608,20 @@ async function getUserNotifications(
   =======================================================
   ONE ACCOUNT'S FEED
 
-  With an audience, only that account's notifications are
-  returned — the seller screen shows seller updates, the
-  work screen shows work updates. The audience is attached
-  to each row either way so the app can route a tap.
+  With an audience, ONLY that account's notifications are
+  returned: the seller screen shows seller updates, the
+  admin screen shows admin updates, and nothing crosses
+  over. A person with several accounts still gets every
+  push on their device; they just read each one on the
+  screen of the account it belongs to.
 
-  A notification with no determinable audience (written
-  before audiences existed, with an ambiguous type) is kept
-  in every feed: showing it once too often beats hiding it.
+  Strict on purpose. This used to keep a notification with
+  no determinable audience in every feed, which put a
+  buyer's "your order is on the way" on the admin screen.
+  Every stored notification has since been tagged, and a
+  new one written without an audience is logged at write
+  time (see createNotification) rather than shown
+  everywhere.
   =======================================================
   */
 
@@ -632,7 +653,6 @@ async function getUserNotifications(
       .filter(
         (row) =>
           !wanted ||
-          !row.audience ||
           row.audience === wanted
       );
 
@@ -725,10 +745,7 @@ async function markAllNotificationsRead(
           return true;
         }
 
-        const rowAudience =
-          audienceOf(doc.data());
-
-        return !rowAudience || rowAudience === wanted;
+        return audienceOf(doc.data()) === wanted;
 
       }
     );

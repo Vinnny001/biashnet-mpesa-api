@@ -58,6 +58,9 @@ const TYPE_AUDIENCE = {
     DROPOFF_NON_COMPLIANT: AUDIENCES.SELLER,
     FUNDS_RELEASED: AUDIENCES.SELLER,
     ORDER_CANCELLED: AUDIENCES.SELLER,
+    // Written by the earlier Biashnet app (lower-case type): "Someone is
+    // interested in <product>", sent to the product's seller.
+    BUYER_INTEREST: AUDIENCES.SELLER,
 
     /* work account */
     EXPENSE_POSTED: AUDIENCES.EMPLOYEE,
