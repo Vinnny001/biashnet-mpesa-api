@@ -24,20 +24,26 @@ async function getCompletionCode(
       orderId,
     } = req.params;
 
-    const result =
-      await getBuyerCompletionCode({
+    /*
+    The service takes (orderId, buyerId) positionally and
+    returns the code string (or null). This used to pass one
+    object and spread the result, so the call always failed
+    with "Buyer ID is required." and no buyer could ever see
+    their code.
+    */
 
+    const code =
+      await getBuyerCompletionCode(
         orderId,
-
-        buyerId,
-
-      });
+        buyerId
+      );
 
     return res.json({
 
       success: true,
 
-      ...result,
+      code:
+        code || null,
 
     });
 

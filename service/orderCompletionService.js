@@ -1,6 +1,10 @@
 const crypto = require("crypto");
 
 const {
+  normalizeReference,
+} = require("../utils/paymentReference");
+
+const {
   db,
   FieldValue,
 } = require("../config/firebase");
@@ -194,6 +198,39 @@ function generatePlainCode() {
 
 /*
 =========================================================
+PAYMENT REFERENCE FOR AN ORDER
+=========================================================
+
+Read from the order's payment record, where it was stored
+when the M-PESA prompt was sent. Null for payments made
+before references existed.
+=========================================================
+*/
+
+async function getPaymentReference(order) {
+
+  if (!order?.paymentId) {
+    return null;
+  }
+
+  const snap =
+    await db
+      .collection(COLLECTIONS.PAYMENTS)
+      .doc(order.paymentId)
+      .get();
+
+  const reference =
+    snap.exists
+      ? snap.data().paymentReference
+      : null;
+
+  return normalizeReference(reference);
+
+}
+
+
+/*
+=========================================================
 NORMALIZE CODE
 =========================================================
 */
@@ -202,11 +239,26 @@ function normalizeCode(
   code
 ) {
 
-  return String(
-    code || ""
-  )
-    .trim()
-    .toUpperCase();
+  /*
+  Codes are now the buyer's payment reference (45682/08/26,
+  the account number in their M-PESA message). A rider may
+  type it with spaces or "-" instead of "/", so it is put in
+  canonical form before hashing — the stored hash was made
+  from the canonical form too.
+
+  Orders paid before references existed still carry a
+  6-digit code; anything that isn't a reference is left as
+  the old normalization so those keep verifying.
+  */
+
+  return (
+    normalizeReference(code) ||
+    String(
+      code || ""
+    )
+      .trim()
+      .toUpperCase()
+  );
 
 }
 
@@ -234,6 +286,38 @@ function validateCodeFormat(
 
   }
 
+  /*
+  A valid payment reference, e.g. 45682/08/26. normalizeReference
+  applies the full rules — including no digit more than twice —
+  not just the shape. A code that breaks them can never have
+  been issued, so it is rejected here, before the order is
+  loaded, rather than reaching the hash check and using up one
+  of the buyer's limited attempts.
+  */
+  if (
+    normalizeReference(
+      normalized
+    )
+  ) {
+
+    return normalized;
+
+  }
+
+  // Looks like an attempt at a reference but isn't valid.
+  if (
+    /[/\-.]/.test(
+      normalized
+    )
+  ) {
+
+    throw new Error(
+      "Enter the code exactly as it appears in the M-PESA message, e.g. 45682/08/26."
+    );
+
+  }
+
+  // Legacy 6-digit codes, for orders paid before references.
   if (
     normalized.length !==
     CODE_LENGTH
@@ -250,7 +334,7 @@ function validateCodeFormat(
     */
 
     throw new Error(
-      `Completion code must be ${CODE_LENGTH} digits — you entered ${normalized.length}.`
+      "Enter the full code from the buyer's M-PESA message, including month and year, e.g. 45682/08/26."
     );
 
   }
@@ -655,7 +739,21 @@ async function generateOrderCompletionCode(
   =======================================================
   */
 
+  /*
+  The code is the payment reference the buyer already has in
+  their M-PESA message — the number they will read out to
+  the rider. Only when a payment predates references (or its
+  record is missing) does it fall back to a random 6-digit
+  code as before.
+  */
+
+  const reference =
+    await getPaymentReference(
+      order
+    );
+
   const code =
+    reference ||
     generatePlainCode();
 
   const normalizedCode =

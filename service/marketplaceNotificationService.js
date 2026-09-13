@@ -328,10 +328,15 @@ async function notifyBuyerCompletionCode({
 
     title: "Your Delivery Code Is Ready",
 
+    /*
+    Says where the code is rather than including it: a push is
+    readable on a locked phone, and this code releases escrow.
+    */
     message:
-      `${customerGreeting(await getBuyerName(buyerId))} your order ` +
-      `${orderId} has a delivery completion code. Only give the code to ` +
-      `the Biashnet rider after receiving and checking your order.`,
+      `${customerGreeting(await getBuyerName(buyerId))} your delivery ` +
+      `code for order ${orderId} is the account number in your M-PESA ` +
+      `payment message (also on your order page). Only give it to the ` +
+      `Biashnet rider after receiving and checking your order.`,
 
     data: {
       orderId,

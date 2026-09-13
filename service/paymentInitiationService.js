@@ -1,6 +1,7 @@
 const { db, FieldValue } = require("../config/firebase");
 const { stkPush, queryStkPushStatus } = require("./darajaService");
 const { money } = require("../utils/money");
+const { reservePaymentReference } = require("../utils/paymentReference");
 const { COLLECTIONS } = require("../config/collections");
 
 const {
@@ -348,8 +349,21 @@ async function initiateMarketplacePayment({
   ========================================================
   */
 
+  /*
+  The account number in the buyer's M-PESA message, and the
+  code they hand the rider on delivery (NNNNN/MM/YY — see
+  utils/paymentReference.js). It used to be
+  `ORDER-${orderId.slice(0, 8)}`, which came out as
+  ORDER-ORD-1789 for every order and was trivially guessable.
+
+  Issued once per order and reused on every resend, so a
+  second prompt shows the same number as the first.
+  */
+
   const accountReference =
-    `ORDER-${orderId.slice(0, 8)}`;
+    (existingPaymentSnap.exists &&
+      existingPaymentSnap.data().paymentReference) ||
+    await reservePaymentReference({ orderId, paymentId });
 
   let mpesaResponse;
 
@@ -367,7 +381,7 @@ async function initiateMarketplacePayment({
     accountReference,
 
     transactionDesc:
-        `BIASHNET ${accountReference}`,
+        "Biashnet order",
 
 });
 
@@ -461,6 +475,14 @@ async function initiateMarketplacePayment({
         : {}),
 
       promptSentAt: now,
+
+      /*
+      Kept on the payment, not the order: order documents are
+      read by seller and logistics screens, and this number
+      releases escrow. The completion code is derived from it
+      after payment and stored encrypted on the order.
+      */
+      paymentReference: accountReference,
 
       paymentId,
       orderId,

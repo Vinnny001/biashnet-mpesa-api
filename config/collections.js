@@ -22,6 +22,16 @@ const COLLECTIONS = {
     PAYMENTS:
         "marketplacePayments",
 
+    /*
+    One document per issued payment reference (the
+    NNNNN/MM/YY account number shown in the buyer's M-PESA
+    message and used as the delivery code). The document ID
+    is the reference itself, so creating it is the
+    uniqueness check. New collection — nothing else reads it.
+    */
+    PAYMENT_REFERENCES:
+        "marketplacePaymentReferences",
+
     TRANSACTIONS:
         "marketplaceTransactions",
 
