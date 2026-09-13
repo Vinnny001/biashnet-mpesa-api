@@ -8,6 +8,7 @@ const orderRoutes = require("./route/orderRoutes");
 const withdrawalRoutes = require("./route/withdrawalRoutes");
 const webhookRoutes = require("./route/webhookRoutes");
 const sellerRoutes = require("./route/sellerRoutes");
+const healthRoutes = require("./route/healthRoutes");
 const notificationRoutes = require("./route/notificationRoutes");
 const publicSellerRoutes = require("./route/publicSellerRoutes");
 const receiptRoutes =
@@ -61,6 +62,13 @@ const internalRoutes =
 const app = express();
 
 app.use(cors());
+
+/*
+Health checks first, ahead of every other route and body
+parsing — see route/healthRoutes.js.
+*/
+app.use(healthRoutes);
+app.use("/api", healthRoutes);
 
 app.use(express.json());
 
