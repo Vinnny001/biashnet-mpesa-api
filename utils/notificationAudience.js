@@ -69,6 +69,9 @@ const TYPE_AUDIENCE = {
     /* investor */
     INVESTOR_PAYOUT: AUDIENCES.INVESTOR,
 
+    /* admin — written by the upload server when a listing needs review */
+    PRODUCT_PENDING_REVIEW: AUDIENCES.ADMIN,
+
 };
 
 
