@@ -335,12 +335,28 @@ async function notifySellerNewOrder({
   orderId,
   amount,
   buyerId,
+  items = [],
+  dropoffDeadline = null,
 }) {
 
   const [sellerName, buyer] = await Promise.all([
     getSellerName(sellerId),
     getBuyerIdentity(buyerId),
   ]);
+
+  /*
+  `items` is THIS seller's slice of the order only — the
+  caller passes the seller's own sub-order items. A seller
+  must never learn what else the customer bought from other
+  shops, and this message is what tells them exactly what
+  to bring to the store.
+  */
+
+  const itemList =
+    describeItems(items);
+
+  const deadline =
+    formatDeadline(dropoffDeadline);
 
   return createNotification({
 
@@ -349,23 +365,185 @@ async function notifySellerNewOrder({
     type: "NEW_MARKETPLACE_ORDER",
 
     title: buyer.label
-      ? `New Order from ${buyer.label}`
-      : "New Order Received",
+      ? `New Paid Order from ${buyer.label}`
+      : "New Paid Order",
 
     message:
-      `${sellerGreeting(sellerName)} you have received a new Biashnet ` +
-      `order ${orderId} from ${party(buyer.label, "a customer")} worth ` +
-      `KES ${Number(amount).toLocaleString()}. Please deliver the item(s) ` +
-      `to the Biashnet store for verification.`,
+      `${sellerGreeting(sellerName)} ${party(buyer.label, "a customer")} ` +
+      `has paid for order ${orderId}` +
+      (itemList ? `: ${itemList}` : "") +
+      ` (KES ${Number(amount || 0).toLocaleString()}). ` +
+      `Please drop off your item(s) at the Biashnet store` +
+      (deadline ? ` by ${deadline}.` : "."),
 
     data: {
       orderId,
       amount,
       buyerName: buyer.label,
+      dropoffDeadline: deadline,
       audience: "SELLER",
       action: "VIEW_SELLER_ORDER",
     },
 
+  });
+
+}
+
+
+/*
+=========================================================
+EVERY SELLER ON A PAID ORDER
+=========================================================
+
+One order can hold items from several shops. Each seller
+gets their own notification listing only their own items,
+amount and drop-off deadline — never the whole order.
+
+The per-seller slice comes from the seller's sub-order,
+which the payment transaction creates before this runs.
+If an order somehow has none (older records), the slice is
+rebuilt from the order itself, still filtered by seller.
+
+Every seller is attempted even if one fails, so a bad
+record for one shop can never stop the others being told
+to drop off.
+=========================================================
+*/
+
+async function notifySellersOfPaidOrder({
+  orderId,
+  order,
+}) {
+
+  const subOrders =
+    await db
+      .collection(COLLECTIONS.SUB_ORDERS)
+      .where("orderId", "==", orderId)
+      .get();
+
+  let slices =
+    subOrders.docs
+      .map((doc) => doc.data())
+      .filter(
+        (subOrder) =>
+          subOrder.sellerId &&
+          !["CANCELLED", "REFUNDED"].includes(subOrder.status)
+      )
+      .map((subOrder) => ({
+        sellerId: subOrder.sellerId,
+        items: subOrder.items || [],
+        amount: subOrder.grossAmount || subOrder.sellerGross || 0,
+        dropoffDeadline: subOrder.dropoffDeadline || null,
+      }));
+
+  if (slices.length === 0) {
+
+    slices =
+      (order?.sellerBreakdown || [])
+        .filter((seller) => seller.sellerId)
+        .map((seller) => ({
+          sellerId: seller.sellerId,
+          items: (order.items || []).filter(
+            (item) => item.sellerId === seller.sellerId
+          ),
+          amount: seller.grossAmount || seller.sellerGross || 0,
+          dropoffDeadline: null,
+        }));
+
+  }
+
+  const results =
+    await Promise.allSettled(
+      slices.map((slice) =>
+        notifySellerNewOrder({
+          ...slice,
+          orderId,
+          buyerId: order?.buyerId,
+        })
+      )
+    );
+
+  const failed =
+    results.filter((result) => result.status === "rejected");
+
+  if (failed.length > 0) {
+
+    throw new Error(
+      `${failed.length} of ${slices.length} seller notification(s) failed: ` +
+      failed.map((result) => result.reason?.message).join("; ")
+    );
+
+  }
+
+  return {
+    notified: slices.length,
+  };
+
+}
+
+
+/*
+"Flask ×1, Vacuum Cup ×2" — capped so a large order still
+fits a push banner.
+*/
+
+function describeItems(items) {
+
+  const list =
+    (Array.isArray(items) ? items : [])
+      .map((item) => {
+
+        const title =
+          String(item?.title || item?.name || "").trim();
+
+        if (!title) {
+          return null;
+        }
+
+        return `${title} ×${Number(item.quantity) || 1}`;
+
+      })
+      .filter(Boolean);
+
+  if (list.length <= 3) {
+
+    return list.join(", ");
+
+  }
+
+  return `${list.slice(0, 3).join(", ")} and ${list.length - 3} more`;
+
+}
+
+
+/*
+Deadlines are stored in UTC but read by sellers in Kenya,
+and Render runs in UTC — so format explicitly in
+Africa/Nairobi rather than trusting the server clock.
+*/
+
+function formatDeadline(value) {
+
+  if (!value) {
+    return null;
+  }
+
+  const date =
+    typeof value.toDate === "function"
+      ? value.toDate()
+      : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toLocaleString("en-KE", {
+    timeZone: "Africa/Nairobi",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 
 }
@@ -388,6 +566,8 @@ module.exports = {
   notifyBuyerCompletionCode,
 
   notifySellerNewOrder,
+
+  notifySellersOfPaidOrder,
 
   notifySellerOutForDelivery,
 

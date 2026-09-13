@@ -50,7 +50,7 @@ const {
 const {
   notifyBuyerPaymentSuccess,
   notifyBuyerCompletionCode,
-  notifySellerNewOrder,
+  notifySellersOfPaidOrder,
 } = require("./marketplaceNotificationService");
 /*
 =========================================================
@@ -575,119 +575,227 @@ async function marketplaceCallback(
     !result?.alreadyProcessed
   ) {
 
-    try {
+    /*
+    =====================================================
+    EVERY STEP STANDS ON ITS OWN
+    =====================================================
 
-      completionResult =
-        await generateOrderCompletionCode(
-          payment.orderId
-        );
+    These steps used to share one try block with the
+    completion code first. When the code failed (e.g.
+    ORDER_CODE_ENCRYPTION_KEY missing on the server) the
+    throw skipped everything after it: no receipt, no
+    "payment successful" to the buyer, and no seller was
+    ever told to drop off — while their 36-hour drop-off
+    window was already running.
 
-      receiptResult =
-        await createMarketplaceReceipt(
-          payment.orderId
-        );
+    Now each step is attempted independently and failures
+    are collected, so one broken step can only ever cost
+    its own output. Sellers go first: their deadline is
+    the only clock already ticking.
 
-      const orderSnap =
-        await db
-          .collection(COLLECTIONS.ORDERS)
-          .doc(payment.orderId)
-          .get();
+    The payment itself is COMPLETED before any of this
+    runs and is never rolled back by a failure here.
+    =====================================================
+    */
 
-      if (!orderSnap.exists) {
+    const failures = [];
 
-        throw new Error(
-          "Order not found after payment processing."
-        );
+    const attempt =
+      async (step, run) => {
 
-      }
+        try {
 
-      const order =
-        orderSnap.data();
+          return await run();
 
-      await notifyBuyerPaymentSuccess({
+        } catch (error) {
 
-        buyerId:
-          order.buyerId,
+          console.error(
+            `⚠️ Post-payment step failed [${step}]:`,
+            error
+          );
 
-        orderId:
-          payment.orderId,
+          failures.push(
+            `${step}: ${error.message}`
+          );
 
-        amount,
+          return null;
 
-        receiptNumber:
-          receipt,
-
-      });
-
-      await notifyBuyerCompletionCode({
-
-        buyerId:
-          order.buyerId,
-
-        orderId:
-          payment.orderId,
-
-      });
-
-      for (
-        const seller
-        of order.sellerBreakdown || []
-      ) {
-
-        if (!seller.sellerId) {
-          continue;
         }
 
-        await notifySellerNewOrder({
+      };
 
-          sellerId:
-            seller.sellerId,
 
-          orderId:
-            payment.orderId,
+    const orderSnap =
+      await attempt(
+        "load order",
+        async () => {
 
-          amount:
-            seller.grossAmount ||
-            seller.sellerGross ||
-            0,
+          const snap =
+            await db
+              .collection(COLLECTIONS.ORDERS)
+              .doc(payment.orderId)
+              .get();
 
-          /*
-          So the seller is told WHICH customer this order
-          is from — they run many at once.
-          */
-          buyerId:
-            order.buyerId,
+          if (!snap.exists) {
 
-        });
+            throw new Error(
+              "Order not found after payment processing."
+            );
 
-      }
+          }
 
-      await orderSnap.ref.update({
+          return snap;
 
-        receiptId:
-          receiptResult.receiptId,
-
-        receiptNumber:
-          receipt,
-
-        orderCompletionCodeStatus:
-          "ACTIVE",
-
-        updatedAt:
-          new Date(),
-
-      });
-
-    } catch (postPaymentError) {
-
-      console.error(
-        "⚠️ Post-payment processing failed:",
-        postPaymentError
+        }
       );
+
+    const order =
+      orderSnap
+        ? orderSnap.data()
+        : null;
+
+
+    if (order) {
+
+      /*
+      One notification per seller, each listing only that
+      seller's own items and deadline.
+      */
+
+      await attempt(
+        "notify sellers",
+        () =>
+          notifySellersOfPaidOrder({
+
+            orderId:
+              payment.orderId,
+
+            order,
+
+          })
+      );
+
+      await attempt(
+        "notify buyer: payment",
+        () =>
+          notifyBuyerPaymentSuccess({
+
+            buyerId:
+              order.buyerId,
+
+            orderId:
+              payment.orderId,
+
+            amount,
+
+            receiptNumber:
+              receipt,
+
+          })
+      );
+
+    }
+
+
+    completionResult =
+      await attempt(
+        "completion code",
+        () =>
+          generateOrderCompletionCode(
+            payment.orderId
+          )
+      );
+
+
+    /*
+    Only tell the buyer their code is ready if one actually
+    exists — previously this was sent unconditionally.
+    */
+
+    if (
+      order &&
+      completionResult
+    ) {
+
+      await attempt(
+        "notify buyer: code",
+        () =>
+          notifyBuyerCompletionCode({
+
+            buyerId:
+              order.buyerId,
+
+            orderId:
+              payment.orderId,
+
+          })
+      );
+
+    }
+
+
+    receiptResult =
+      await attempt(
+        "receipt",
+        () =>
+          createMarketplaceReceipt(
+            payment.orderId
+          )
+      );
+
+
+    /*
+    Record only what was actually produced. The old update
+    marked the code ACTIVE and wrote a receiptId without
+    checking either existed.
+    */
+
+    if (
+      orderSnap &&
+      (receiptResult || completionResult)
+    ) {
+
+      await attempt(
+        "update order",
+        () =>
+          orderSnap.ref.update({
+
+            ...(receiptResult
+              ? {
+                receiptId:
+                  receiptResult.receiptId,
+
+                receiptNumber:
+                  receipt,
+              }
+              : {}),
+
+            ...(completionResult
+              ? {
+                orderCompletionCodeStatus:
+                  "ACTIVE",
+              }
+              : {}),
+
+            updatedAt:
+              new Date(),
+
+          })
+      );
+
+    }
+
+
+    if (
+      failures.length > 0
+    ) {
 
       /*
       IMPORTANT:
-      Payment remains COMPLETED.
+      Payment remains COMPLETED. Same status value and
+      field names as before, so anything already reading
+      them keeps working — the error now lists every step
+      that failed rather than only the first.
       */
 
       await ref.update({
@@ -696,7 +804,7 @@ async function marketplaceCallback(
           "POST_PAYMENT_PROCESSING_FAILED",
 
         callbackProcessingError:
-          postPaymentError.message,
+          failures.join(" | "),
 
         receivedByPlatform:
           true,
@@ -704,7 +812,13 @@ async function marketplaceCallback(
         updatedAt:
           new Date(),
 
-      });
+      }).catch(
+        (error) =>
+          console.error(
+            "⚠️ Could not record post-payment failures:",
+            error
+          )
+      );
 
     }
 
