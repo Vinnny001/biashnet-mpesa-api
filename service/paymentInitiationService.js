@@ -1,5 +1,5 @@
-const { db } = require("../config/firebase");
-const { stkPush } = require("./darajaService");
+const { db, FieldValue } = require("../config/firebase");
+const { stkPush, queryStkPushStatus } = require("./darajaService");
 const { money } = require("../utils/money");
 const { COLLECTIONS } = require("../config/collections");
 
@@ -39,6 +39,82 @@ function validatePhone(phone) {
     );
   }
 }
+
+/*
+========================================================
+STALE PROMPT CUTOFF
+========================================================
+
+An STK prompt expires on the handset after about a minute.
+Three minutes leaves room for a slow network and a buyer
+fumbling their PIN, while being long past the point where
+the old prompt could still be answered — which is what
+makes sending a new one safe from double charging.
+========================================================
+*/
+
+const STALE_PROMPT_MS = 3 * 60 * 1000;
+
+
+function toMillis(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value._seconds === "number") return value._seconds * 1000;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+
+/*
+Pure policy, so it can be tested without Safaricom.
+
+  prompt younger than the cutoff  -> WAIT (it may still be on the phone)
+  Safaricom says PAID             -> AWAIT_CONFIRMATION (never charge twice;
+                                     the callback is late, not missing)
+  FAILED / PROCESSING / UNKNOWN   -> RESEND (the old prompt can no longer
+                                     be answered on the phone)
+
+UNKNOWN resends too: if Safaricom can't even be asked, the
+cutoff has still passed, and refusing would leave the buyer
+exactly as stuck as before.
+*/
+
+function planPendingPrompt({ ageMs, queryState }) {
+  if (ageMs < STALE_PROMPT_MS) {
+    return { action: "WAIT", reason: "prompt still within the answer window" };
+  }
+
+  if (queryState === "PAID") {
+    return { action: "AWAIT_CONFIRMATION", reason: "Safaricom reports it paid; callback not yet received" };
+  }
+
+  return { action: "RESEND", reason: `stale prompt, Safaricom state ${queryState || "UNKNOWN"}` };
+}
+
+
+async function decideOnPendingPrompt({ payment, checkoutRequestID }) {
+  const sentAt =
+    toMillis(payment.promptSentAt) ||
+    toMillis(payment.updatedAt) ||
+    toMillis(payment.createdAt);
+
+  const ageMs =
+    sentAt ? Date.now() - sentAt : Number.POSITIVE_INFINITY;
+
+  // Don't bother Safaricom about a prompt that may still be live.
+  if (ageMs < STALE_PROMPT_MS) {
+    return planPendingPrompt({ ageMs });
+  }
+
+  const query =
+    await queryStkPushStatus(checkoutRequestID);
+
+  return {
+    ...planPendingPrompt({ ageMs, queryState: query.state }),
+    query,
+  };
+}
+
 
 function generatePaymentId() {
   return `PAY-${Date.now()}-${Math.random()
@@ -190,24 +266,79 @@ async function initiateMarketplacePayment({
         PAYMENT_STATUS.PENDING &&
       existingCheckoutRequestID
     ) {
-      return {
-        success: true,
-        alreadyInitiated: true,
-        paymentId,
-        orderId,
-        amount,
-        currency: "KES",
-        phone,
-        paymentMethod: PAYMENT_METHODS.MPESA,
-        provider: PAYMENT_PROVIDERS.MPESA,
-        status: PAYMENT_STATUS.PENDING,
-        checkoutRequestID:
-          existingCheckoutRequestID,
-        merchantRequestID:
-          existingMerchantRequestID,
-        message:
-          "An M-PESA payment request is already active. Check your phone.",
-      };
+      /*
+      ======================================================
+      A PROMPT IS ALREADY OUT — IS IT REALLY STILL ALIVE?
+      ======================================================
+
+      This used to answer "already active, check your
+      phone" forever. When Safaricom lost a prompt (it
+      stayed at "still under processing", never reached the
+      phone, never timed out, never called back) the order
+      could never receive another prompt and could never be
+      paid.
+
+      Recent prompts are left alone: the buyer may be typing
+      their PIN right now. Once one is older than the cutoff
+      it can no longer be answered on the handset, so we ask
+      Safaricom what happened before deciding.
+      ======================================================
+      */
+
+      const decision =
+        await decideOnPendingPrompt({
+          payment: existingPayment,
+          checkoutRequestID: existingCheckoutRequestID,
+        });
+
+      if (decision.action !== "RESEND") {
+
+        if (decision.action === "AWAIT_CONFIRMATION") {
+
+          await paymentRef.set(
+            {
+              reconciliation: {
+                status: "PAID_PER_SAFARICOM_QUERY",
+                checkoutRequestID: existingCheckoutRequestID,
+                resultCode: decision.query?.resultCode || null,
+                resultDesc: decision.query?.resultDesc || null,
+                checkedAt: new Date(),
+              },
+              requiresReview: true,
+              updatedAt: new Date(),
+            },
+            { merge: true }
+          );
+
+        }
+
+        return {
+          success: true,
+          alreadyInitiated: true,
+          paymentId,
+          orderId,
+          amount,
+          currency: "KES",
+          phone,
+          paymentMethod: PAYMENT_METHODS.MPESA,
+          provider: PAYMENT_PROVIDERS.MPESA,
+          status: PAYMENT_STATUS.PENDING,
+          checkoutRequestID:
+            existingCheckoutRequestID,
+          merchantRequestID:
+            existingMerchantRequestID,
+          message:
+            decision.action === "AWAIT_CONFIRMATION"
+              ? "M-PESA reports this payment as completed. We're waiting for their confirmation to finish your order — please don't pay again."
+              : "An M-PESA payment request is already active. Check your phone.",
+        };
+      }
+
+      console.log(
+        `🔁 Replacing stale M-PESA prompt for ${orderId}:`,
+        existingCheckoutRequestID,
+        decision.reason
+      );
     }
   }
 
@@ -301,8 +432,36 @@ async function initiateMarketplacePayment({
 
   const now = new Date();
 
+  /*
+  A new prompt replaces the order's current checkout ID, but
+  the old one is kept. Safaricom callbacks are matched by
+  checkout ID, so if a replaced request ever did report
+  back — even as paid — it must still find this payment
+  rather than arrive as money with no order.
+  */
+
+  const previousCheckoutRequestID =
+    existingPaymentSnap.exists
+      ? existingPaymentSnap.data().checkoutRequestID ||
+        existingPaymentSnap.data().checkoutRequestId ||
+        null
+      : null;
+
+  const supersedes =
+    previousCheckoutRequestID &&
+    previousCheckoutRequestID !== checkoutRequestID;
+
   await paymentRef.set(
     {
+      ...(supersedes
+        ? {
+            previousCheckoutRequestIDs:
+              FieldValue.arrayUnion(previousCheckoutRequestID),
+          }
+        : {}),
+
+      promptSentAt: now,
+
       paymentId,
       orderId,
       buyerId,
@@ -404,4 +563,6 @@ async function initiateMarketplacePayment({
 
 module.exports = {
   initiateMarketplacePayment,
+  planPendingPrompt,
+  STALE_PROMPT_MS,
 };

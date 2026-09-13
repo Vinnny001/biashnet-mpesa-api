@@ -759,11 +759,172 @@ EXPORTS
 =========================================================
 */
 
+/*
+=========================================================
+STK PUSH STATUS QUERY
+=========================================================
+
+Asks Safaricom what actually happened to an STK request.
+Needed because Safaricom does not always send the callback:
+a request can sit at "still under processing" indefinitely,
+never reaching the phone and never timing out, and without
+this there is no way to tell a lost prompt from a slow one.
+
+Read-only — it never moves money.
+
+Returns one of:
+
+  PAID        ResultCode 0
+  PROCESSING  ResultCode 4999, or Daraja's
+              "500.001.1001 The transaction is being processed"
+  FAILED      any other ResultCode (1032 cancelled, 1037
+              unreachable/timeout, 1 insufficient funds,
+              2001 wrong PIN, ...)
+  UNKNOWN     Safaricom could not be asked at all
+=========================================================
+*/
+
+async function queryStkPushStatus(checkoutRequestID) {
+
+    if (!checkoutRequestID) {
+
+        return {
+            state: "UNKNOWN",
+            reason: "No CheckoutRequestID.",
+        };
+
+    }
+
+
+    try {
+
+        const token =
+            await getAccessToken();
+
+        const timestamp =
+            getTimestamp();
+
+        const password =
+            Buffer.from(
+                DARajaConfig.shortCode +
+                DARajaConfig.passKey +
+                timestamp
+            ).toString(
+                "base64"
+            );
+
+        const response =
+            await axios.post(
+                "https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query",
+                {
+                    BusinessShortCode:
+                        DARajaConfig.shortCode,
+
+                    Password:
+                        password,
+
+                    Timestamp:
+                        timestamp,
+
+                    CheckoutRequestID:
+                        checkoutRequestID,
+                },
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${token}`,
+                        "Content-Type":
+                            "application/json",
+                    },
+                    timeout:
+                        20000,
+                }
+            );
+
+        return classifyStkQuery(
+            response.data
+        );
+
+    } catch (error) {
+
+        const data =
+            error.response?.data;
+
+        if (data) {
+
+            return classifyStkQuery(
+                data
+            );
+
+        }
+
+        console.error(
+            "❌ STK status query failed:",
+            error.message
+        );
+
+        return {
+            state: "UNKNOWN",
+            reason: error.message,
+        };
+
+    }
+
+}
+
+
+function classifyStkQuery(data = {}) {
+
+    const resultCode =
+        data.ResultCode !== undefined
+            ? String(data.ResultCode)
+            : null;
+
+    const resultDesc =
+        data.ResultDesc ||
+        data.errorMessage ||
+        data.ResponseDescription ||
+        null;
+
+    if (resultCode === "0") {
+
+        return { state: "PAID", resultCode, resultDesc };
+
+    }
+
+    if (
+        resultCode === "4999" ||
+        String(data.errorCode || "") === "500.001.1001"
+    ) {
+
+        return { state: "PROCESSING", resultCode: resultCode || data.errorCode, resultDesc };
+
+    }
+
+    if (resultCode !== null) {
+
+        return { state: "FAILED", resultCode, resultDesc };
+
+    }
+
+    return {
+        state: "UNKNOWN",
+        resultCode: data.errorCode || null,
+        resultDesc,
+    };
+
+}
+
+
 module.exports = {
 
     getAccessToken,
 
     stkPush,
+
+    queryStkPushStatus,
+
+    classifyStkQuery,
 
     initiateB2CPayment,
 

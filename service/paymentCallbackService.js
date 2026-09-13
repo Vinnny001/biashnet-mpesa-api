@@ -1,5 +1,6 @@
 const {
   db,
+  FieldValue,
 } = require("../config/firebase");
 
 const {
@@ -93,7 +94,36 @@ async function marketplaceCallback(
 
   /*
   =======================================================
+  A REPLACED PROMPT REPORTING BACK
+  =======================================================
+
+  A stale prompt can be replaced by a fresh one (see
+  paymentInitiationService). Its CheckoutRequestID is kept
+  in previousCheckoutRequestIDs so a late callback for it
+  still lands here, and `superseded` tells the two apart.
+  =======================================================
+  */
+
+  const superseded =
+    Boolean(
+      callback?.CheckoutRequestID &&
+      payment.checkoutRequestID &&
+      callback.CheckoutRequestID !== payment.checkoutRequestID
+    );
+
+
+  /*
+  =======================================================
   ALREADY COMPLETED
+  =======================================================
+
+  Safaricom retries callbacks, so a repeat of the payment
+  that completed this order is normal and ignored. But a
+  SUCCESS carrying a different M-Pesa receipt means the
+  buyer was charged a second time for the same order —
+  possible once prompts can be replaced. That money must
+  not vanish silently: it is recorded and flagged for a
+  refund.
   =======================================================
   */
 
@@ -101,6 +131,66 @@ async function marketplaceCallback(
     payment.status ===
     PAYMENT_STATUS.COMPLETED
   ) {
+
+    const lateReceipt =
+      value(
+        callback,
+        "MpesaReceiptNumber"
+      );
+
+    if (
+      resultCode === 0 &&
+      lateReceipt &&
+      lateReceipt !== payment.receiptNumber
+    ) {
+
+      console.error(
+        "🚨 DUPLICATE M-PESA PAYMENT for completed order — refund review needed:",
+        payment.orderId,
+        lateReceipt
+      );
+
+      await ref.update({
+
+        duplicatePayments:
+          FieldValue.arrayUnion({
+            checkoutRequestID:
+              callback.CheckoutRequestID || null,
+            receiptNumber:
+              lateReceipt,
+            amount:
+              Number(value(callback, "Amount")) || null,
+            phone:
+              String(value(callback, "PhoneNumber") || "") || null,
+            receivedAt:
+              new Date().toISOString(),
+          }),
+
+        requiresRefundReview:
+          true,
+
+        updatedAt:
+          new Date(),
+
+      });
+
+      return {
+
+        handled: true,
+
+        alreadyProcessed: true,
+
+        duplicatePayment: true,
+
+        orderId:
+          payment.orderId,
+
+        paymentId:
+          payment.paymentId,
+
+      };
+
+    }
 
     return {
 
@@ -113,6 +203,62 @@ async function marketplaceCallback(
 
       paymentId:
         payment.paymentId,
+
+    };
+
+  }
+
+
+  /*
+  =======================================================
+  FAILURE OF A REPLACED PROMPT
+  =======================================================
+
+  The old, abandoned prompt finally timing out must NOT
+  fail the payment — a fresh prompt is out on the buyer's
+  phone right now, and failing it would kill that attempt
+  and push the order back. Record it and stop.
+  =======================================================
+  */
+
+  if (
+    resultCode !== 0 &&
+    superseded
+  ) {
+
+    await ref.update({
+
+      supersededPromptResults:
+        FieldValue.arrayUnion({
+          checkoutRequestID:
+            callback.CheckoutRequestID,
+          resultCode,
+          resultDesc,
+          receivedAt:
+            new Date().toISOString(),
+        }),
+
+      updatedAt:
+        new Date(),
+
+    });
+
+    return {
+
+      handled: true,
+
+      superseded: true,
+
+      orderId:
+        payment.orderId,
+
+      paymentId:
+        payment.paymentId ||
+        doc.id,
+
+      resultCode,
+
+      resultDesc,
 
     };
 
@@ -520,14 +666,27 @@ async function marketplaceCallback(
     callbackPhoneNumber:
       phone || null,
 
+    /*
+    Keep the payment's CURRENT checkout ID. If a replaced
+    prompt is the one that paid, overwriting it with the old
+    ID would orphan the fresh prompt: its callback could no
+    longer find this payment, so a second charge would be
+    lost instead of flagged for refund. The ID that actually
+    paid is recorded separately.
+    */
+
     merchantRequestID:
-      callback.MerchantRequestID ||
       payment.merchantRequestID ||
+      callback.MerchantRequestID ||
       null,
 
     checkoutRequestID:
-      callback.CheckoutRequestID ||
       payment.checkoutRequestID ||
+      callback.CheckoutRequestID ||
+      null,
+
+    paidCheckoutRequestID:
+      callback.CheckoutRequestID ||
       null,
 
     providerResponse:
@@ -1307,11 +1466,33 @@ async function findMarketplacePayment(
       .limit(1)
       .get();
 
-  if (snapshot.empty) {
-    return null;
+  if (!snapshot.empty) {
+    return snapshot.docs[0];
   }
 
-  return snapshot.docs[0];
+  /*
+  A prompt that was replaced by a fresh one keeps its ID in
+  previousCheckoutRequestIDs, so its late callback still
+  reaches the payment instead of being dropped as unknown.
+  Single-field array-contains — no composite index.
+  */
+
+  const replaced =
+    await db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .where(
+        "previousCheckoutRequestIDs",
+        "array-contains",
+        checkoutRequestID
+      )
+      .limit(1)
+      .get();
+
+  return replaced.empty
+    ? null
+    : replaced.docs[0];
 
 }
 
