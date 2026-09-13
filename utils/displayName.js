@@ -84,11 +84,12 @@ acceptable for one of them:
          worse than "Dear Customer," — it tells someone
          Biashnet does not know who they are.
 
-  label  identifying the OTHER party, e.g. "new order
-         from vintest1". Here an email handle genuinely
-         helps: a seller juggling three orders needs to
-         tell the customers apart, and an imperfect
-         handle beats "a customer" three times over.
+  label  identifying the OTHER party, e.g. telling a
+         buyer which shop delivered. Here an email handle
+         is an acceptable last resort.
+
+A buyer's name or label is NEVER shown to a seller —
+sellers are not told who bought from them.
 
 Both come from a single Firestore read.
 =========================================================

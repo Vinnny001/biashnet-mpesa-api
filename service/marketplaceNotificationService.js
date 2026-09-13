@@ -14,7 +14,6 @@ const {
 const {
   getBuyerName,
   getSellerName,
-  getBuyerIdentity,
 } = require("../utils/displayName");
 
 const {
@@ -40,6 +39,10 @@ greet() also personalises when a name is known:
 
 A missing name degrades to the plain salutation rather
 than an empty gap or a raw uid.
+
+Each person is only ever greeted by their OWN name. A
+buyer's name, phone or other details never appear in a
+notification sent to a seller.
 =========================================================
 */
 
@@ -66,16 +69,6 @@ function sellerGreeting(name) {
 }
 
 
-/*
-Names the other party in a sentence, e.g. "from Achieng",
-and collapses to a neutral phrase when unknown.
-*/
-
-function party(name, fallback) {
-
-  return name || fallback;
-
-}
 
 
 /*
@@ -236,13 +229,16 @@ completion code releases their funds.
 async function notifySellerOutForDelivery({
   sellerId,
   orderId,
-  buyerId,
 }) {
 
-  const [sellerName, buyer] = await Promise.all([
-    getSellerName(sellerId),
-    getBuyerIdentity(buyerId),
-  ]);
+  /*
+  No buyer details: sellers never learn who bought from them.
+  Delivery is Biashnet's job, so the order ID is all a seller
+  needs to recognise the order.
+  */
+
+  const sellerName =
+    await getSellerName(sellerId);
 
   return createNotification({
 
@@ -254,13 +250,11 @@ async function notifySellerOutForDelivery({
 
     message:
       `${sellerGreeting(sellerName)} your item(s) for order ${orderId} ` +
-      `have left Biashnet and are on the way to ` +
-      `${party(buyer.label, "the customer")}. Your funds are released ` +
-      `once the customer confirms delivery.`,
+      `have left Biashnet and are on the way to the customer. Your ` +
+      `funds are released once the customer confirms delivery.`,
 
     data: {
       orderId,
-      buyerName: buyer.label,
       audience: "SELLER",
       action: "VIEW_SELLER_ORDER",
     },
@@ -354,14 +348,16 @@ async function notifyBuyerCompletionCode({
 SELLER NEW ORDER
 =========================================================
 
-A seller receives orders from many different customers,
-often several in a day. Naming the customer is what makes
-these distinguishable on a lock screen — otherwise every
-one reads identically apart from an order id no human
-remembers.
+Sellers are never told who bought from them — no name,
+phone or other buyer detail appears in any seller
+notification. Delivery is handled by Biashnet, so a seller
+has no need to know the customer.
 
-The title carries the name too, because a push banner is
-frequently truncated to roughly the title alone.
+A seller can still run several orders at once, so each
+notification is made recognisable by what the seller
+actually has to act on: their own items, which lead the
+title (a push banner is often cut down to roughly the
+title), plus the order ID, amount and drop-off deadline.
 =========================================================
 */
 
@@ -369,15 +365,12 @@ async function notifySellerNewOrder({
   sellerId,
   orderId,
   amount,
-  buyerId,
   items = [],
   dropoffDeadline = null,
 }) {
 
-  const [sellerName, buyer] = await Promise.all([
-    getSellerName(sellerId),
-    getBuyerIdentity(buyerId),
-  ]);
+  const sellerName =
+    await getSellerName(sellerId);
 
   /*
   `items` is THIS seller's slice of the order only — the
@@ -399,13 +392,12 @@ async function notifySellerNewOrder({
 
     type: "NEW_MARKETPLACE_ORDER",
 
-    title: buyer.label
-      ? `New Paid Order from ${buyer.label}`
+    title: headlineItem(items)
+      ? `New Paid Order: ${headlineItem(items)}`
       : "New Paid Order",
 
     message:
-      `${sellerGreeting(sellerName)} ${party(buyer.label, "a customer")} ` +
-      `has paid for order ${orderId}` +
+      `${sellerGreeting(sellerName)} order ${orderId} has been paid` +
       (itemList ? `: ${itemList}` : "") +
       ` (KES ${Number(amount || 0).toLocaleString()}). ` +
       `Please drop off your item(s) at the Biashnet store` +
@@ -414,7 +406,6 @@ async function notifySellerNewOrder({
     data: {
       orderId,
       amount,
-      buyerName: buyer.label,
       dropoffDeadline: deadline,
       audience: "SELLER",
       action: "VIEW_SELLER_ORDER",
@@ -493,7 +484,6 @@ async function notifySellersOfPaidOrder({
         notifySellerNewOrder({
           ...slice,
           orderId,
-          buyerId: order?.buyerId,
         })
       )
     );
@@ -513,6 +503,31 @@ async function notifySellersOfPaidOrder({
   return {
     notified: slices.length,
   };
+
+}
+
+
+/*
+"Flask ×1" or "Flask ×1 +2 more" — short enough for a
+notification title.
+*/
+
+function headlineItem(items) {
+
+  const titled =
+    (Array.isArray(items) ? items : [])
+      .filter((item) => String(item?.title || item?.name || "").trim());
+
+  if (titled.length === 0) {
+    return null;
+  }
+
+  const first =
+    `${String(titled[0].title || titled[0].name).trim()} ×${Number(titled[0].quantity) || 1}`;
+
+  return titled.length > 1
+    ? `${first} +${titled.length - 1} more`
+    : first;
 
 }
 

@@ -474,10 +474,14 @@ async function confirmDropoff({
             );
 
         /*
-        Name both parties. The seller runs orders for many
-        customers at once, and the buyer's order may have
-        several sellers on it — "a seller's item arrived"
-        is useless when they are waiting on three.
+        The buyer is told WHICH shop delivered — their order
+        may have several sellers on it, and "a seller's item
+        arrived" is useless when they are waiting on three. A
+        shop's name is public anyway.
+
+        The reverse never happens: the seller is not told who
+        the buyer is. The buyer's identity is looked up only
+        to greet the buyer by their own name.
         */
 
         const [seller, buyer] =
@@ -498,7 +502,7 @@ async function confirmDropoff({
                     "Drop-off confirmed",
 
                 message:
-                    `${sellerName ? `Dear Seller ${sellerName},` : "Dear Seller,"} Biashnet has received your item(s) for order ${result.orderId}${buyer.label ? ` from ${buyer.label}` : ""}. Your funds will be released once the customer confirms delivery.`,
+                    `${sellerName ? `Dear Seller ${sellerName},` : "Dear Seller,"} Biashnet has received your item(s) for order ${result.orderId}. Your funds will be released once the customer confirms delivery.`,
 
                 type:
                     "DROPOFF_CONFIRMED",
@@ -1066,9 +1070,6 @@ async function markOutForDelivery({
 
                         orderId,
 
-                        buyerId:
-                            result.buyerId,
-
                     }).catch(
                         () => {}
                     )
@@ -1152,15 +1153,30 @@ async function getSubOrdersForSeller(
             )
             .get();
 
+    /*
+    Served to sellers (GET /api/seller/sub-orders), so the
+    buyer's uid is removed — a seller is never told who the
+    buyer is. Staff use getSubOrdersForOrder, which keeps it.
+    */
+
     return snapshot.docs.map(
-        (document) => ({
+        (document) => {
 
-            id:
-                document.id,
+            const {
+                buyerId,
+                ...subOrder
+            } = document.data();
 
-            ...document.data(),
+            return {
 
-        })
+                id:
+                    document.id,
+
+                ...subOrder,
+
+            };
+
+        }
     );
 
 }

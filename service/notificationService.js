@@ -14,7 +14,6 @@ const {
 const {
   getBuyerName,
   getSellerName,
-  getBuyerIdentity,
 } = require("../utils/displayName");
 
 const {
@@ -341,18 +340,12 @@ async function notifySellerOrderCompleted({
 
   amount,
 
-  buyerId,
-
 }) {
 
   /*
-  .label, not .name — this identifies the customer TO the
-  seller, so an email handle is an acceptable last resort
-  here in a way it never is in a salutation.
+  No buyer details — sellers are never told who bought from
+  them. The order ID and amount identify the order.
   */
-
-  const buyerName =
-    (await getBuyerIdentity(buyerId)).label;
 
   return createNotification(
 
@@ -364,7 +357,7 @@ async function notifySellerOrderCompleted({
         "Funds Released",
 
       message:
-        `${await sellerSalutation(sellerId)} order ${orderId}${buyerName ? ` from ${buyerName}` : ""} has been completed and your seller funds of KES ${Number(amount).toLocaleString()} have been released to your wallet.`,
+        `${await sellerSalutation(sellerId)} order ${orderId} has been completed and your seller funds of KES ${Number(amount).toLocaleString()} have been released to your wallet.`,
 
       type:
         "FUNDS_RELEASED",

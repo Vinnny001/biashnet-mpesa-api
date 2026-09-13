@@ -2390,6 +2390,15 @@ async function getOrders(
         }
 
 
+        /*
+        No buyer details. Sellers drop items off at Biashnet
+        and Biashnet delivers, so a seller never needs the
+        buyer's identity, phone number or address — and the
+        buyer's uid is left out too, since it could be used
+        to look the buyer up. Logistics staff get delivery
+        details through their own endpoints.
+        */
+
         orders.push({
 
             id:
@@ -2398,9 +2407,6 @@ async function getOrders(
             orderId:
                 order.orderId ||
                 doc.id,
-
-            buyerId:
-                order.buyerId,
 
             status:
                 order.status,
@@ -2413,12 +2419,6 @@ async function getOrders(
 
             updatedAt:
                 order.updatedAt,
-
-            buyerPhone:
-                order.buyerPhone,
-
-            deliveryAddress:
-                order.deliveryAddress,
 
             items:
                 sellerItems,
@@ -2597,6 +2597,11 @@ async function getOrder(
             : null;
 
 
+    /*
+    No buyer details — see getOrders. Biashnet delivers, so a
+    seller has no need for the buyer's uid, phone or address.
+    */
+
     return {
 
         id:
@@ -2606,20 +2611,11 @@ async function getOrder(
             order.orderId ||
             snapshot.id,
 
-        buyerId:
-            order.buyerId,
-
         status:
             order.status,
 
         paymentStatus:
             order.paymentStatus,
-
-        buyerPhone:
-            order.buyerPhone,
-
-        deliveryAddress:
-            order.deliveryAddress,
 
         createdAt:
             order.createdAt,

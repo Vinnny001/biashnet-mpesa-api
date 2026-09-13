@@ -2617,6 +2617,13 @@ async function getSellerOrders(
                         : undefined;
 
 
+                /*
+                No buyer uid, phone or delivery address: Biashnet
+                delivers, so sellers never need to know or contact
+                the buyer. Logistics staff read delivery details
+                through their own endpoints.
+                */
+
                 return {
 
                     id:
@@ -2626,20 +2633,11 @@ async function getSellerOrders(
                         data.orderId ||
                         doc.id,
 
-                    buyerId:
-                        data.buyerId,
-
                     status:
                         data.status,
 
                     paymentStatus:
                         data.paymentStatus,
-
-                    deliveryAddress:
-                        data.deliveryAddress,
-
-                    buyerPhone:
-                        data.buyerPhone,
 
                     createdAt:
                         data.createdAt,
@@ -3039,10 +3037,8 @@ async function cancelOrder({
     });
 
     /*
-    Looked up once and reused across every seller on the
-    order, so a five-seller cancellation is one read, not
-    five. Sellers need to know WHICH customer cancelled —
-    they may have several orders open at the time.
+    Used only to greet the buyer by their own name. Sellers
+    are told the order ID, never who the customer is.
     */
 
     const cancellationBuyer =
@@ -3067,7 +3063,7 @@ async function cancelOrder({
                                 "Order cancelled",
 
                             message:
-                                `Dear Seller, order ${orderId}${cancellationBuyer.label ? ` from ${cancellationBuyer.label}` : ""} was cancelled by the customer before fulfillment. No drop-off is needed for this order.`,
+                                `Dear Seller, order ${orderId} was cancelled by the customer before fulfillment. No drop-off is needed for this order.`,
 
                             type:
                                 "ORDER_CANCELLED",
