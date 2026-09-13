@@ -65,74 +65,127 @@ async function sendPush(userId, { title, message }) {
 
     }
 
-    const response =
-      await admin.messaging().sendEachForMulticast({
+    /*
+    -------------------------------------------------------
+    ONE send() PER DEVICE — NOT A MULTICAST
+    -------------------------------------------------------
 
-        tokens,
+    This service runs firebase-admin 10.3.0. The previous
+    code called sendEachForMulticast(), which only exists
+    from 11.7.0, so every push ever attempted threw
+    "is not a function" into the catch below and no device
+    ever received one. In-app notifications were unaffected,
+    which is why this went unnoticed.
+
+    The v10 multicast methods (sendMulticast / sendAll) are
+    not a fix either: they go through FCM's legacy batch
+    endpoint, which Google shut down in June 2024. send()
+    uses the current HTTP v1 API and works on this version
+    — it is also what sendEachForMulticast does internally,
+    one request per token.
+
+    Upgrading firebase-admin would allow the multicast call
+    again, but it is a major-version jump across a service
+    that moves money; not worth that risk for a push.
+    -------------------------------------------------------
+    */
+
+    const message_ = {
+
+      notification: {
+
+        title,
+
+        body: message,
+
+      },
+
+      /*
+      High message priority tells FCM to wake the device and
+      deliver immediately (vs "normal", which Android/FCM may
+      batch and delay); channelId is what actually produces
+      the heads-up banner on the device, driven by that
+      channel's own IMPORTANCE_HIGH set at creation time.
+      */
+      android: {
+
+        priority: "high",
 
         notification: {
 
-          title,
-
-          body: message,
-
-        },
-
-        /*
-        High message priority tells FCM to wake the device and
-        deliver immediately (vs "normal", which Android/FCM may
-        batch and delay); channelId is what actually produces
-        the heads-up banner on the device, driven by that
-        channel's own IMPORTANCE_HIGH set at creation time.
-        */
-        android: {
-
-          priority: "high",
-
-          notification: {
-
-            channelId:
-              ANDROID_NOTIFICATION_CHANNEL_ID,
-
-          },
+          channelId:
+            ANDROID_NOTIFICATION_CHANNEL_ID,
 
         },
 
-      });
+      },
+
+    };
+
+    const results =
+      await Promise.allSettled(
+        tokens.map(
+          (token) =>
+            admin.messaging().send({
+
+              ...message_,
+
+              token,
+
+            })
+        )
+      );
 
     /*
     -------------------------------------------------------
-    PRUNE DEAD TOKENS
+    PRUNE DEAD TOKENS, LOG EVERYTHING ELSE
     -------------------------------------------------------
 
-    A token stops being valid when the app is uninstalled,
-    the user revokes notification permission at the OS
-    level, etc. — clean those up so future sends don't keep
-    paying the round-trip for a device that's gone.
+    A token stops being valid when the app is uninstalled or
+    reinstalled, the user revokes notification permission
+    at the OS level, etc. — clean those up so future sends
+    don't keep paying the round-trip for a device that's
+    gone.
+
+    Any OTHER failure is logged. The old code silently
+    dropped every non-dead-token error, which is exactly how
+    a broken push path stayed invisible.
     -------------------------------------------------------
     */
 
     const deadTokens = [];
 
-    response.responses.forEach(
+    results.forEach(
       (result, index) => {
 
+        if (result.status === "fulfilled") {
+
+          return;
+
+        }
+
         const code =
-          result.error?.code;
+          result.reason?.code;
 
         if (
-          !result.success &&
-          (
-            code === "messaging/invalid-registration-token" ||
-            code === "messaging/registration-token-not-registered"
-          )
+          code === "messaging/invalid-registration-token" ||
+          code === "messaging/registration-token-not-registered"
         ) {
 
           deadTokens.push(
             tokens[index]
           );
 
+          return;
+
         }
+
+        console.error(
+          "❌ Push rejected by FCM:",
+          userId,
+          code || "",
+          result.reason?.message
+        );
 
       }
     );
