@@ -61,6 +61,9 @@ const TYPE_AUDIENCE = {
     // Written by the earlier Biashnet app (lower-case type): "Someone is
     // interested in <product>", sent to the product's seller.
     BUYER_INTEREST: AUDIENCES.SELLER,
+    // Written by the main backend when an admin approves or rejects a listing.
+    PRODUCT_APPROVED: AUDIENCES.SELLER,
+    PRODUCT_REJECTED: AUDIENCES.SELLER,
 
     /* work account */
     EXPENSE_POSTED: AUDIENCES.EMPLOYEE,
